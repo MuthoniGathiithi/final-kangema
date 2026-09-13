@@ -31,7 +31,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/transactions", transactionsRoutes);
-app.use("/api/mpesa", mpesaRoutes);
+app.use("/api/daraja", mpesaRoutes);
 app.use("/api/excel", excelImportRoutes);
 
 // 404 handler
