@@ -30,6 +30,19 @@ app.get("/api/health", (req, res) => {
   res.json({ success: true, status: "ok" });
 });
 
+// TEMPORARY - remove once we've confirmed env vars are correct on the live deployment
+app.get("/api/debug-env", (req, res) => {
+  const key = process.env.MPESA_CONSUMER_KEY || "";
+  res.json({
+    MPESA_ENV: process.env.MPESA_ENV || "(not set -> defaults to sandbox)",
+    MPESA_SHORTCODE: process.env.MPESA_SHORTCODE || "(not set)",
+    MPESA_CONSUMER_KEY_preview: key ? key.slice(0, 4) + "..." : "(not set)",
+    BASE_URL_used: (process.env.MPESA_ENV || "sandbox") === "production"
+      ? "https://api.safaricom.co.ke"
+      : "https://sandbox.safaricom.co.ke",
+  });
+});
+
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/daraja", mpesaRoutes);
 app.use("/api/excel", excelImportRoutes);
