@@ -16,7 +16,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 
-// Health check - useful to confirm the server (local or hosted) is actually up
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -40,6 +39,11 @@ app.get("/api/debug-env", (req, res) => {
     BASE_URL_used: (process.env.MPESA_ENV || "sandbox") === "production"
       ? "https://api.safaricom.co.ke"
       : "https://sandbox.safaricom.co.ke",
+    BASE_URL: process.env.BASE_URL || "(not set)",
+    MPESA_CONFIRMATION_URL: process.env.MPESA_CONFIRMATION_URL || "(not set)",
+    MPESA_VALIDATION_URL: process.env.MPESA_VALIDATION_URL || "(not set)",
+    full_ConfirmationURL: `${process.env.BASE_URL || ""}${process.env.MPESA_CONFIRMATION_URL || ""}`,
+    full_ValidationURL: `${process.env.BASE_URL || ""}${process.env.MPESA_VALIDATION_URL || ""}`,
   });
 });
 
@@ -47,7 +51,6 @@ app.use("/api/transactions", transactionsRoutes);
 app.use("/api/daraja", mpesaRoutes);
 app.use("/api/excel", excelImportRoutes);
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `No route for ${req.method} ${req.originalUrl}` });
 });
