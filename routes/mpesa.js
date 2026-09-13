@@ -7,6 +7,7 @@ const {
   stkCallback,
   triggerStkPush,
   registerUrls,
+  simulateC2B,
 } = require("../controllers/mpesaController");
 
 // --- Daraja calls these directly - no API key, Safaricom won't send one ---
@@ -17,5 +18,6 @@ router.post("/stk/callback", stkCallback);
 // --- Your own app calls these - protected ---
 router.post("/stk/push", requireApiKey, triggerStkPush);
 router.post("/register-urls", requireApiKey, registerUrls);
+router.post("/c2b/simulate", requireApiKey, simulateC2B);
 
 module.exports = router;

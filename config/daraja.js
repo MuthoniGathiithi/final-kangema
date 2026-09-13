@@ -9,9 +9,6 @@ const BASE_URL = IS_PRODUCTION
 let cachedToken = null;
 let cachedTokenExpiry = 0; // epoch ms
 
-/**
- * Gets an OAuth access token from Daraja, caching it until ~60s before expiry.
- */
 async function getAccessToken() {
   const now = Date.now();
   if (cachedToken && now < cachedTokenExpiry) {
@@ -35,15 +32,11 @@ async function getAccessToken() {
   );
 
   cachedToken = data.access_token;
-  // expires_in is in seconds (usually 3599); refresh a bit early
   cachedTokenExpiry = now + (Number(data.expires_in) - 60) * 1000;
 
   return cachedToken;
 }
 
-/**
- * Builds the Lipa Na M-Pesa password + timestamp pair used by STK push.
- */
 function buildStkPassword() {
   const shortcode = process.env.MPESA_SHORTCODE;
   const passkey = process.env.MPESA_PASSKEY;
@@ -54,10 +47,6 @@ function buildStkPassword() {
   return { password, timestamp };
 }
 
-/**
- * Triggers an STK push (Lipa Na M-Pesa Online) prompt on the payer's phone.
- * phone must be in the format 2547XXXXXXXX
- */
 async function stkPush({ phone, amount, accountReference, description }) {
   const token = await getAccessToken();
   const { password, timestamp } = buildStkPassword();
@@ -87,12 +76,6 @@ async function stkPush({ phone, amount, accountReference, description }) {
   return data;
 }
 
-/**
- * Registers the Validation + Confirmation callback URLs against the paybill (C2B).
- * Only needs to be run once per shortcode (Daraja remembers it), but it's exposed
- * as an endpoint here so you can (re)register whenever your public URL changes,
- * e.g. every time you restart ngrok locally.
- */
 async function registerC2BUrls() {
   const token = await getAccessToken();
   const shortcode = process.env.MPESA_SHORTCODE;
@@ -113,9 +96,31 @@ async function registerC2BUrls() {
   return data;
 }
 
+async function simulateC2B({ amount, msisdn, billRefNumber }) {
+  const token = await getAccessToken();
+  const shortcode = process.env.MPESA_SHORTCODE;
+
+  const payload = {
+    ShortCode: shortcode,
+    CommandID: "CustomerPayBillOnline",
+    Amount: amount,
+    Msisdn: msisdn,
+    BillRefNumber: billRefNumber || "TestPay",
+  };
+
+  const { data } = await axios.post(
+    `${BASE_URL}/mpesa/c2b/v1/simulate`,
+    payload,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  return data;
+}
+
 module.exports = {
   BASE_URL,
   getAccessToken,
   stkPush,
   registerC2BUrls,
+  simulateC2B,
 };

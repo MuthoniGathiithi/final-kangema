@@ -2,22 +2,11 @@ const supabase = require("../config/supabase");
 const { parseDarajaTimestamp } = require("../utils/time");
 const daraja = require("../config/daraja");
 
-/**
- * POST /api/mpesa/c2b/validation
- * Safaricom calls this BEFORE completing the transaction, asking "should this go through?"
- * We accept everything by default. Reject here only if you need to enforce business rules
- * (e.g. a required account format) before the money moves.
- */
 function c2bValidation(req, res) {
   console.log("[c2b:validation]", JSON.stringify(req.body));
   return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 }
 
-/**
- * POST /api/mpesa/c2b/confirmation
- * Safaricom calls this AFTER the transaction has completed. This is the source of truth
- * for real paybill payments (till/paybill deposits, not STK push).
- */
 async function c2bConfirmation(req, res) {
   console.log("[c2b:confirmation]", JSON.stringify(req.body));
 
@@ -38,7 +27,6 @@ async function c2bConfirmation(req, res) {
       raw_payload: body,
     };
 
-    // upsert on transaction_code so retried callbacks don't create duplicates
     const { error } = await supabase
       .from("transactions")
       .upsert(record, { onConflict: "transaction_code" });
@@ -48,14 +36,9 @@ async function c2bConfirmation(req, res) {
     console.error("[c2b:confirmation] handler error:", err);
   }
 
-  // Always acknowledge - Safaricom will retry if you don't respond 200
   return res.json({ ResultCode: 0, ResultDesc: "Confirmation received successfully" });
 }
 
-/**
- * POST /api/mpesa/stk/callback
- * Safaricom calls this after the customer responds to an STK push prompt (or it times out).
- */
 async function stkCallback(req, res) {
   console.log("[stk:callback]", JSON.stringify(req.body));
 
@@ -77,7 +60,7 @@ async function stkCallback(req, res) {
       transaction_code: get("MpesaReceiptNumber") || null,
       amount: Number(get("Amount")) || 0,
       msisdn: get("PhoneNumber") ? String(get("PhoneNumber")) : null,
-      account_number: null, // STK push doesn't return the account reference in the callback
+      account_number: null,
       transaction_time: get("TransactionDate")
         ? parseDarajaTimestamp(get("TransactionDate"))
         : new Date(),
@@ -97,11 +80,6 @@ async function stkCallback(req, res) {
   return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 }
 
-/**
- * POST /api/mpesa/stk/push
- * Trigger an STK push manually (for testing, or for in-app "pay now" flows).
- * Body: { phone, amount, accountReference, description }
- */
 async function triggerStkPush(req, res, next) {
   try {
     const { phone, amount, accountReference, description } = req.body;
@@ -115,14 +93,22 @@ async function triggerStkPush(req, res, next) {
   }
 }
 
-/**
- * POST /api/mpesa/register-urls
- * Registers/refreshes the C2B validation + confirmation URLs with Daraja.
- * Run this once after deploying, and again any time BASE_URL changes (e.g. new ngrok URL).
- */
 async function registerUrls(req, res, next) {
   try {
     const result = await daraja.registerC2BUrls();
+    res.json({ success: true, result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function simulateC2B(req, res, next) {
+  try {
+    const { amount, msisdn, billRefNumber } = req.body;
+    if (!amount || !msisdn) {
+      return res.status(400).json({ success: false, message: "amount and msisdn are required" });
+    }
+    const result = await daraja.simulateC2B({ amount, msisdn, billRefNumber });
     res.json({ success: true, result });
   } catch (err) {
     next(err);
@@ -135,4 +121,5 @@ module.exports = {
   stkCallback,
   triggerStkPush,
   registerUrls,
+  simulateC2B,
 };
