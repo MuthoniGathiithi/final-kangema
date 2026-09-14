@@ -114,4 +114,40 @@ async function importExcel(req, res, next) {
   }
 }
 
-module.exports = { importExcel };
+/**
+ * GET /api/excel/data
+ * Returns all imported Excel records
+ */
+async function getExcelData(req, res, next) {
+  try {
+    const { data: rows, error } = await supabase
+      .from("excel_unmatched_rows")
+      .select("id, account_number, row_data, import_id, created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    const formattedData = rows.map((row) => {
+      const rowData = row.row_data || {};
+      return {
+        id: row.id,
+        accountNumber: row.account_number || "",
+        name: rowData.name || rowData.Name || "",
+        amount: rowData.amount || rowData.Amount || 0,
+        notes: rowData.notes || rowData.Notes || null,
+        category: rowData.category || rowData.Category || null,
+        importId: row.import_id,
+        importedAt: row.created_at,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: formattedData,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { importExcel, getExcelData };
