@@ -21,7 +21,7 @@ function formatTransaction(row) {
 
 /**
  * GET /api/transactions
- * Query params: page, pageSize, search (matches code/account/msisdn), source, from, to
+ * Query params: page, pageSize, search (matches code/account/msisdn/name/amount), source, from, to
  */
 async function listTransactions(req, res, next) {
   try {
@@ -35,9 +35,18 @@ async function listTransactions(req, res, next) {
       .order("transaction_time", { ascending: false });
 
     if (search) {
-      query = query.or(
-        `transaction_code.ilike.%${search}%,account_number.ilike.%${search}%,msisdn.ilike.%${search}%`
-      );
+      const isNumeric = /^\d+(\.\d+)?$/.test(search.trim());
+      const clauses = [
+        `transaction_code.ilike.%${search}%`,
+        `account_number.ilike.%${search}%`,
+        `msisdn.ilike.%${search}%`,
+        `first_name.ilike.%${search}%`,
+        `last_name.ilike.%${search}%`,
+      ];
+      if (isNumeric) {
+        clauses.push(`amount.eq.${search.trim()}`);
+      }
+      query = query.or(clauses.join(","));
     }
     if (source) {
       query = query.eq("source", source);
