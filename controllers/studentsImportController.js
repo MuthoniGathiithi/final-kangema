@@ -1,6 +1,67 @@
 const XLSX = require("xlsx");
 const supabase = require("../config/supabase");
-const { findHeaderRowIndex, rowToObject } = require("../utils/excelParse");
+
+// Header cell spellings we'll recognize, mapped to our column names.
+// Matching is case-insensitive and ignores punctuation/extra spaces.
+const HEADER_MAP = {
+  admission_number: ["adm", "adm no", "adm number", "admission no", "admission number"],
+  full_name: ["name", "student name", "full name", "names"],
+  contact: ["contact", "phone", "mobile", "phone number", "contact number", "guardian contact"],
+  opening_balance: ["o.p.bal", "op bal", "opening balance", "opbal", "o p bal"],
+  previous_balance: ["p.p.bal", "pp bal", "previous balance", "ppbal", "p p bal"],
+  current_balance: ["c.p.bal", "cp bal", "current balance", "cpbal", "c p bal"],
+  term_amount: ["term 3", "term3", "term amount", "term 3 amount", "term3 amount"],
+};
+
+function normalizeHeaderCell(cell) {
+  if (cell === null || cell === undefined) return "";
+  return String(cell).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Scans the first N rows of a sheet (as arrays) looking for the row that looks
+ * like a header - the fee register's real header isn't row 1, it's a few rows
+ * down after a title/date section. We consider a row "the header" once it
+ * contains both something that looks like an admission-number column AND a
+ * name column.
+ */
+function findHeaderRowIndex(rows, maxRowsToScan = 15) {
+  const limit = Math.min(rows.length, maxRowsToScan);
+  for (let i = 0; i < limit; i++) {
+    const row = rows[i] || [];
+    const normalizedCells = row.map(normalizeHeaderCell);
+
+    const hasAdm = normalizedCells.some((cell) => HEADER_MAP.admission_number.includes(cell));
+    const hasName = normalizedCells.some((cell) => HEADER_MAP.full_name.includes(cell));
+
+    if (hasAdm && hasName) return i;
+  }
+  return -1;
+}
+
+/**
+ * Builds a map of { ourColumnName: cellIndex } by matching each header cell
+ * against HEADER_MAP. Unrecognized columns are simply ignored (not an error) -
+ * they just won't be pulled into named fields, though the full row is still
+ * kept in raw_row for reference.
+ */
+function buildColumnIndex(headerRow) {
+  const index = {};
+  const normalizedCells = headerRow.map(normalizeHeaderCell);
+
+  for (const [ourColumn, spellings] of Object.entries(HEADER_MAP)) {
+    const cellIndex = normalizedCells.findIndex((cell) => spellings.includes(cell));
+    if (cellIndex !== -1) index[ourColumn] = cellIndex;
+  }
+  return index;
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const cleaned = String(value).replace(/,/g, "").trim();
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
 
 /**
  * POST /api/students/import
@@ -30,6 +91,8 @@ async function importStudents(req, res, next) {
 
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
+      // header: 1 -> array-of-arrays, so we can scan for the header row ourselves
+      // rather than assuming row 1 is it.
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: false });
 
       if (rows.length === 0) {
@@ -46,18 +109,25 @@ async function importStudents(req, res, next) {
         continue;
       }
 
+      const columnIndex = buildColumnIndex(rows[headerRowIndex]);
       const dataRows = rows.slice(headerRowIndex + 1);
 
       summary.sheetsProcessed++;
 
       for (let i = 0; i < dataRows.length; i++) {
         const row = dataRows[i];
-        const rowNumber = headerRowIndex + 2 + i;
-        const parsed = rowToObject(rows[headerRowIndex], row, sheetName);
+        const rowNumber = headerRowIndex + 2 + i; // +2: 1-indexed, plus the header row itself
+
+        const admissionNumber =
+          columnIndex.admission_number !== undefined
+            ? row[columnIndex.admission_number]
+            : null;
+        const fullName =
+          columnIndex.full_name !== undefined ? row[columnIndex.full_name] : null;
 
         summary.rowsTotal++;
 
-        if (!parsed.accountNumber || !parsed.studentName) {
+        if (!admissionNumber || !fullName) {
           summary.rowsSkipped++;
           summary.skippedRows.push({
             sheet: sheetName,
@@ -67,16 +137,26 @@ async function importStudents(req, res, next) {
           continue;
         }
 
+        // Keep the full raw row (as an object keyed by whatever header text was found,
+        // falling back to a column index) for reference/debugging, regardless of
+        // which columns we recognized.
+        const headerRow = rows[headerRowIndex];
+        const rawRow = {};
+        headerRow.forEach((headerCell, idx) => {
+          const key = headerCell !== null && headerCell !== undefined ? String(headerCell).trim() : `col_${idx}`;
+          rawRow[key || `col_${idx}`] = row[idx] ?? null;
+        });
+
         const record = {
-          admission_number: parsed.accountNumber,
-          full_name: parsed.studentName,
-          contact: parsed.contact,
+          admission_number: String(admissionNumber).trim(),
+          full_name: String(fullName).trim(),
+          contact: columnIndex.contact !== undefined ? String(row[columnIndex.contact] ?? "").trim() || null : null,
           class_stream: sheetName,
-          opening_balance: parsed.openingBalance,
-          previous_balance: parsed.previousBalance,
-          current_balance: parsed.currentBalance,
-          term_amount: parsed.termAmount,
-          raw_row: parsed.rawRow,
+          opening_balance: toNumber(columnIndex.opening_balance !== undefined ? row[columnIndex.opening_balance] : 0),
+          previous_balance: toNumber(columnIndex.previous_balance !== undefined ? row[columnIndex.previous_balance] : 0),
+          current_balance: toNumber(columnIndex.current_balance !== undefined ? row[columnIndex.current_balance] : 0),
+          term_amount: toNumber(columnIndex.term_amount !== undefined ? row[columnIndex.term_amount] : 0),
+          raw_row: rawRow,
         };
 
         const { error: upsertError } = await supabase
@@ -85,7 +165,7 @@ async function importStudents(req, res, next) {
 
         if (upsertError) {
           summary.rowsSkipped++;
-          summary.rowsTotal--;
+          summary.rowsTotal--; // don't double count - this row didn't actually make it in
           summary.skippedRows.push({
             sheet: sheetName,
             rowNumber,
@@ -161,68 +241,4 @@ async function listStudents(req, res, next) {
   }
 }
 
-/**
- * GET /api/students/sheets
- * Distinct class_stream values (Excel sheet names) with row counts.
- */
-async function listStudentSheets(req, res, next) {
-  try {
-    const { data, error } = await supabase
-      .from("students")
-      .select("class_stream")
-      .not("class_stream", "is", null);
-
-    if (error) throw error;
-
-    const counts = {};
-    for (const row of data || []) {
-      const name = row.class_stream;
-      if (!name) continue;
-      counts[name] = (counts[name] || 0) + 1;
-    }
-
-    const sheets = Object.entries(counts)
-      .map(([sheetName, studentCount]) => ({ sheetName, studentCount }))
-      .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
-
-    res.json({ success: true, sheets });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
- * DELETE /api/students/sheets/:sheetName
- * Deletes all students whose class_stream matches the Excel sheet name.
- */
-async function deleteStudentSheet(req, res, next) {
-  try {
-    const sheetName = decodeURIComponent(req.params.sheetName || "").trim();
-    if (!sheetName) {
-      return res.status(400).json({ success: false, message: "sheetName is required" });
-    }
-
-    const { data, error } = await supabase
-      .from("students")
-      .delete()
-      .eq("class_stream", sheetName)
-      .select("id");
-
-    if (error) throw error;
-
-    res.json({
-      success: true,
-      message: `Deleted sheet "${sheetName}"`,
-      deletedStudents: (data || []).length,
-    });
-  } catch (err) {
-    next(err);
-  }
-}
-
-module.exports = {
-  importStudents,
-  listStudents,
-  listStudentSheets,
-  deleteStudentSheet,
-};
+module.exports = { importStudents, listStudents };
