@@ -241,4 +241,68 @@ async function listStudents(req, res, next) {
   }
 }
 
-module.exports = { importStudents, listStudents };
+/**
+ * GET /api/students/sheets
+ * Distinct class_stream values (Excel sheet names) with counts.
+ */
+async function listStudentSheets(req, res, next) {
+  try {
+    const { data, error } = await supabase
+      .from("students")
+      .select("class_stream")
+      .not("class_stream", "is", null);
+
+    if (error) throw error;
+
+    const counts = {};
+    for (const row of data || []) {
+      const name = row.class_stream;
+      if (!name) continue;
+      counts[name] = (counts[name] || 0) + 1;
+    }
+
+    const sheets = Object.entries(counts)
+      .map(([sheetName, studentCount]) => ({ sheetName, studentCount }))
+      .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
+
+    res.json({ success: true, sheets });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/students/sheets/:sheetName
+ * Deletes all students for that class/stream (Excel sheet name).
+ */
+async function deleteStudentSheet(req, res, next) {
+  try {
+    const sheetName = decodeURIComponent(req.params.sheetName || "").trim();
+    if (!sheetName) {
+      return res.status(400).json({ success: false, message: "sheetName is required" });
+    }
+
+    const { data, error } = await supabase
+      .from("students")
+      .delete()
+      .eq("class_stream", sheetName)
+      .select("id");
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: `Deleted sheet "${sheetName}"`,
+      deletedStudents: (data || []).length,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  importStudents,
+  listStudents,
+  listStudentSheets,
+  deleteStudentSheet,
+};

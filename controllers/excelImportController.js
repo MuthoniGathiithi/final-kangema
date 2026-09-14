@@ -265,8 +265,8 @@ async function importExcel(req, res, next) {
       const studentName = extractStudentName(row, sheetName);
       const amount = extractAmount(row);
 
-      // Add student name to row data
-      const enrichedRow = { ...row, studentName };
+      // Add student name + sheet to row data (sheetName lets deletes target a sheet later)
+      const enrichedRow = { ...row, studentName, sheetName, trackName };
 
       if (!accountNumber) {
         unmatched++;
@@ -391,6 +391,101 @@ async function getExcelData(req, res, next) {
 }
 
 /**
+ * GET /api/excel/sheets
+ * Lists distinct sheet names from unmatched Excel rows (for delete UI).
+ */
+async function listExcelSheets(req, res, next) {
+  try {
+    const { data, error } = await supabase
+      .from("excel_unmatched_rows")
+      .select("sheet_name")
+      .not("sheet_name", "is", null);
+
+    if (error) throw error;
+
+    const counts = {};
+    for (const row of data || []) {
+      const name = row.sheet_name;
+      if (!name) continue;
+      counts[name] = (counts[name] || 0) + 1;
+    }
+
+    const sheets = Object.entries(counts)
+      .map(([sheetName, rowCount]) => ({ sheetName, rowCount }))
+      .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
+
+    res.json({ success: true, sheets });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/excel/sheets/:sheetName
+ * Deletes all unmatched rows for that sheet, and clears matching
+ * supplementary_data on transactions linked from that sheet.
+ */
+async function deleteExcelSheet(req, res, next) {
+  try {
+    const sheetName = decodeURIComponent(req.params.sheetName || "").trim();
+    if (!sheetName) {
+      return res.status(400).json({ success: false, message: "sheetName is required" });
+    }
+
+    const { data: deletedRows, error: deleteRowsError } = await supabase
+      .from("excel_unmatched_rows")
+      .delete()
+      .eq("sheet_name", sheetName)
+      .select("id");
+
+    if (deleteRowsError) {
+      console.error("[deleteExcelSheet] Error deleting unmatched rows:", deleteRowsError);
+      throw deleteRowsError;
+    }
+
+    let clearedTransactions = 0;
+    const { data: txs, error: txErr } = await supabase
+      .from("transactions")
+      .select("id, supplementary_data")
+      .not("supplementary_data", "is", null);
+
+    if (txErr) throw txErr;
+
+    for (const tx of txs || []) {
+      const data = tx.supplementary_data || {};
+      const matches =
+        data.sheetName === sheetName ||
+        data.trackName === sheetName ||
+        data.track_name === sheetName;
+
+      if (!matches) continue;
+
+      const { error: clearErr } = await supabase
+        .from("transactions")
+        .update({ supplementary_data: null, linked_at: null })
+        .eq("id", tx.id);
+
+      if (clearErr) throw clearErr;
+      clearedTransactions++;
+    }
+
+    console.log(
+      `[deleteExcelSheet] Deleted sheet "${sheetName}": unmatched=${(deletedRows || []).length}, clearedTx=${clearedTransactions}`
+    );
+
+    res.json({
+      success: true,
+      message: `Deleted Excel sheet "${sheetName}"`,
+      deletedUnmatchedRows: (deletedRows || []).length,
+      clearedTransactions,
+    });
+  } catch (err) {
+    console.error("[deleteExcelSheet] Error:", err);
+    next(err);
+  }
+}
+
+/**
  * DELETE /api/excel/import/:id
  * Deletes an Excel import and all its associated unmatched rows
  */
@@ -499,4 +594,11 @@ async function debugExcel(req, res, next) {
   }
 }
 
-module.exports = { importExcel, getExcelData, deleteExcelImport, debugExcel };
+module.exports = {
+  importExcel,
+  getExcelData,
+  listExcelSheets,
+  deleteExcelSheet,
+  deleteExcelImport,
+  debugExcel,
+};
