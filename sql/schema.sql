@@ -21,6 +21,7 @@ create table if not exists transactions (
   -- Where this record came from
   source text not null default 'daraja' check (source in ('daraja', 'sms', 'manual')),
   raw_payload jsonb,                   -- full original payload (Daraja callback or parsed SMS) for auditing
+  raw_message text,                    -- raw SMS message body (for SMS source only)
 
   -- Excel-imported supplementary fields (linked via account_number)
   supplementary_data jsonb,            -- flexible bag for whatever the Excel file provides

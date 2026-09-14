@@ -1,5 +1,6 @@
 const supabase = require("../config/supabase");
 const { toEAT } = require("../utils/time");
+const XLSX = require("xlsx");
 
 function formatTransaction(row) {
   return {
@@ -16,6 +17,7 @@ function formatTransaction(row) {
     source: row.source,
     supplementaryData: row.supplementary_data || null,
     createdAt: toEAT(row.created_at),
+    rawMessage: row.raw_message || null,
   };
 }
 
@@ -118,6 +120,7 @@ async function createManualTransaction(req, res, next) {
       businessShortcode,
       source,
       rawPayload,
+      rawMessage,
     } = req.body;
 
     if (!amount || !accountNumber) {
@@ -125,6 +128,8 @@ async function createManualTransaction(req, res, next) {
         .status(400)
         .json({ success: false, message: "amount and accountNumber are required" });
     }
+
+    const isSms = source === "sms";
 
     const { data, error } = await supabase
       .from("transactions")
@@ -138,8 +143,9 @@ async function createManualTransaction(req, res, next) {
         last_name: lastName || null,
         transaction_time: time ? new Date(time).toISOString() : new Date().toISOString(),
         business_shortcode: businessShortcode || null,
-        source: source === "sms" ? "sms" : "manual",
+        source: isSms ? "sms" : "manual",
         raw_payload: rawPayload || null,
+        raw_message: isSms ? rawMessage || null : null,
       })
       .select()
       .single();
@@ -152,4 +158,72 @@ async function createManualTransaction(req, res, next) {
   }
 }
 
-module.exports = { listTransactions, getTransaction, createManualTransaction, formatTransaction };
+/**
+ * GET /api/transactions/export
+ * Exports all transactions as an Excel (.xlsx) file
+ */
+async function exportTransactions(req, res, next) {
+  try {
+    const { search, source, from, to } = req.query;
+
+    let query = supabase
+      .from("transactions")
+      .select("*")
+      .order("transaction_time", { ascending: false });
+
+    if (search) {
+      const isNumeric = /^\d+(\.\d+)?$/.test(search.trim());
+      const clauses = [
+        `transaction_code.ilike.%${search}%`,
+        `account_number.ilike.%${search}%`,
+        `msisdn.ilike.%${search}%`,
+        `first_name.ilike.%${search}%`,
+        `last_name.ilike.%${search}%`,
+      ];
+      if (isNumeric) {
+        clauses.push(`amount.eq.${search.trim()}`);
+      }
+      query = query.or(clauses.join(","));
+    }
+    if (source) {
+      query = query.eq("source", source);
+    }
+    if (from) {
+      query = query.gte("transaction_time", from);
+    }
+    if (to) {
+      query = query.lte("transaction_time", to);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const worksheetData = [
+      ["Code", "Account Number", "MSISDN", "Payer Name", "Amount", "Time", "Business Shortcode", "Source"],
+      ...data.map((row) => [
+        row.transaction_code || "",
+        row.account_number || "",
+        row.msisdn || "",
+        [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(" "),
+        Number(row.amount) || 0,
+        toEAT(row.transaction_time),
+        row.business_shortcode || "",
+        row.source || "",
+      ]),
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Transactions");
+
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=transactions.xlsx");
+    res.send(buffer);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listTransactions, getTransaction, createManualTransaction, exportTransactions, formatTransaction };
