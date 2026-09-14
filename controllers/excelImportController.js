@@ -391,6 +391,48 @@ async function getExcelData(req, res, next) {
 }
 
 /**
+ * DELETE /api/excel/import/:id
+ * Deletes an Excel import and all its associated unmatched rows
+ */
+async function deleteExcelImport(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    // First delete unmatched rows associated with this import
+    const { error: deleteRowsError } = await supabase
+      .from("excel_unmatched_rows")
+      .delete()
+      .eq("import_id", id);
+
+    if (deleteRowsError) {
+      console.error("[deleteExcelImport] Error deleting unmatched rows:", deleteRowsError);
+      throw deleteRowsError;
+    }
+
+    // Then delete the import record
+    const { error: deleteImportError } = await supabase
+      .from("excel_imports")
+      .delete()
+      .eq("id", id);
+
+    if (deleteImportError) {
+      console.error("[deleteExcelImport] Error deleting import:", deleteImportError);
+      throw deleteImportError;
+    }
+
+    console.log(`[deleteExcelImport] Successfully deleted import ${id}`);
+
+    res.json({
+      success: true,
+      message: "Excel import deleted successfully",
+    });
+  } catch (err) {
+    console.error("[deleteExcelImport] Error:", err);
+    next(err);
+  }
+}
+
+/**
  * POST /api/excel/debug
  * Debug endpoint to analyze Excel file structure without importing
  * Returns the parsed structure for debugging
@@ -457,4 +499,4 @@ async function debugExcel(req, res, next) {
   }
 }
 
-module.exports = { importExcel, getExcelData, debugExcel };
+module.exports = { importExcel, getExcelData, deleteExcelImport, debugExcel };
