@@ -1,254 +1,116 @@
 const XLSX = require("xlsx");
 const supabase = require("../config/supabase");
+const { findHeaderRowIndex, rowToObject } = require("../utils/excelParse");
 
 /**
- * Finds the account-number-like column in a row, trying a few common header spellings.
+ * Parse every sheet in a workbook into normalized row objects.
+ * Auto-detects the real header row (fee registers put titles/dates above the header).
  */
-function extractAccountNumber(row) {
-  const candidates = [
-    "account number",
-    "account_number",
-    "accountnumber",
-    "account no",
-    "acc no",
-    "account",
-    "reference",
-    "ref",
-    "ref no",
-    "refno",
-    "bill ref",
-    "billref",
-    "bill ref number",
-    "billrefnumber",
-    "adm",
-    "adm ",
-    "admission",
-    "admission no",
-    "admission number",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractAccountNumber] Available keys:", keys);
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractAccountNumber] Found account number in column "${key}": ${value}`);
-      return value;
-    }
-  }
-  // Try to find by column position (ADM is usually the second column)
-  const keysArray = Object.keys(row);
-  if (keysArray.length >= 2) {
-    const secondKey = keysArray[1];
-    const value = String(row[secondKey]).trim();
-    if (value && !isNaN(Number(value))) {
-      console.log(`[extractAccountNumber] Using second column "${secondKey}" as account number: ${value}`);
-      return value;
-    }
-  }
-  console.log("[extractAccountNumber] No account number column found");
-  return null;
-}
+function parseWorkbookSheets(workbook) {
+  const sheets = [];
+  const skipped = [];
 
-/**
- * Extracts track name from row data
- */
-function extractTrackName(row, sheetName) {
-  const candidates = [
-    "track",
-    "track name",
-    "track_name",
-    "trackname",
-    "name",
-    "student name",
-    "student_name",
-    "studentname",
-    "full name",
-    "full_name",
-    "fullname",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractTrackName] Available keys:", keys);
-  console.log("[extractTrackName] Sheet name (fallback):", sheetName);
-  
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractTrackName] Found track name in column "${key}": ${value}`);
-      return value;
-    }
-  }
-  
-  // If no column found, use the sheet name as track name
-  if (sheetName) {
-    console.log(`[extractTrackName] Using sheet name as track name: ${sheetName}`);
-    return sheetName;
-  }
-  
-  console.log("[extractTrackName] No track name column found");
-  return null;
-}
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: null,
+      blankrows: false,
+    });
 
-/**
- * Extracts student name from row data
- */
-function extractStudentName(row, sheetName) {
-  const candidates = [
-    "name",
-    "student name",
-    "student_name",
-    "studentname",
-    "full name",
-    "full_name",
-    "fullname",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractStudentName] Available keys:", keys);
-  console.log("[extractStudentName] Sheet name:", sheetName);
-  
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractStudentName] Found student name in column "${key}": ${value}`);
-      return value;
+    if (rows.length === 0) {
+      skipped.push({ sheet: sheetName, reason: "empty sheet" });
+      continue;
     }
-  }
-  
-  // Try to find column that contains the sheet name (e.g., "GRADE 10 - KENYATTA")
-  for (const key of keys) {
-    if (key.includes(sheetName) || key.includes("GRADE")) {
-      const value = String(row[key]).trim();
-      if (value && value !== "NAME") {
-        console.log(`[extractStudentName] Found student name in sheet-named column "${key}": ${value}`);
-        return value;
-      }
-    }
-  }
-  
-  console.log("[extractStudentName] No student name column found");
-  return null;
-}
 
-/**
- * Extracts amount from row data - handles currency symbols, commas, and various formats
- */
-function extractAmount(row) {
-  const candidates = [
-    "amount",
-    "ksh",
-    "kes",
-    "value",
-    "total",
-    "fee",
-    "payment",
-    "balance",
-    "term 3",
-    "term 1",
-    "term 2",
-    "term",
-    "0.p.bal",
-    "p.p.bal",
-    "c.p.bal",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractAmount] Available keys:", keys);
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      let value = row[key];
-      console.log(`[extractAmount] Found amount column "${key}" with raw value:`, value);
-      
-      // Handle null/undefined
-      if (value === null || value === undefined || value === "") {
-        console.log("[extractAmount] Value is null/undefined/empty, returning 0");
-        return 0;
-      }
-      
-      // Convert to string and clean
-      value = String(value).trim();
-      
-      // Remove currency symbols and commas
-      value = value.replace(/[Kk][Ss][Hh]/g, "");
-      value = value.replace(/[Kk][Ee][Ss]/g, "");
-      value = value.replace(/[Kk][Ss]/g, "");
-      value = value.replace(/[$£€]/g, "");
-      value = value.replace(/,/g, "");
-      value = value.trim();
-      
-      const parsed = parseFloat(value);
-      const result = isNaN(parsed) ? 0 : parsed;
-      console.log(`[extractAmount] Parsed amount: ${result}`);
-      return result;
+    const headerRowIndex = findHeaderRowIndex(rows);
+    if (headerRowIndex === -1) {
+      skipped.push({
+        sheet: sheetName,
+        reason: "could not find a header row with both an admission-number and a name column",
+      });
+      continue;
     }
-  }
-  
-  // Try to find by column position (TERM 3 is usually the 6th column, index 5)
-  const keysArray = Object.keys(row);
-  if (keysArray.length >= 6) {
-    const sixthKey = keysArray[5];
-    const value = row[sixthKey];
-    if (value !== null && value !== undefined && value !== "") {
-      const parsed = parseFloat(String(value).replace(/,/g, ""));
-      if (!isNaN(parsed) && parsed > 0) {
-        console.log(`[extractAmount] Using sixth column "${sixthKey}" as amount: ${parsed}`);
-        return parsed;
-      }
+
+    const headerRow = rows[headerRowIndex];
+    const dataRows = rows.slice(headerRowIndex + 1);
+    const parsedRows = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const parsed = rowToObject(headerRow, dataRows[i], sheetName);
+      // Skip completely empty data rows
+      if (!parsed.accountNumber && !parsed.studentName) continue;
+      parsedRows.push({
+        ...parsed,
+        sheetName,
+        rowNumber: headerRowIndex + 2 + i,
+      });
     }
+
+    sheets.push({
+      sheetName,
+      headerRowIndex,
+      columns: headerRow.map((c) => (c == null ? "" : String(c).trim())),
+      rows: parsedRows,
+    });
   }
-  
-  console.log("[extractAmount] No amount column found, returning 0");
-  return 0;
+
+  return { sheets, skipped };
 }
 
 /**
  * POST /api/excel/import
  * multipart/form-data with a single field "file" (.xlsx or .xls)
+ * Processes ALL sheets; detects the real header row on each sheet.
  */
 async function importExcel(req, res, next) {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file uploaded (field name must be 'file')" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No file uploaded (field name must be 'file')" });
     }
 
     console.log("========== EXCEL IMPORT START ==========");
-    console.log("[excel import] File received:", req.file.originalname);
-    console.log("[excel import] File size:", req.file.size);
-    console.log("[excel import] MIME type:", req.file.mimetype);
-    console.log("[excel import] Buffer length:", req.file.buffer.length);
+    console.log("[excel import] File:", req.file.originalname, "size:", req.file.size);
 
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    console.log("[excel import] Workbook loaded successfully");
-    const sheetName = workbook.SheetNames[0];
-    console.log("[excel import] Sheet name:", sheetName);
-    console.log("[excel import] All sheet names:", workbook.SheetNames);
-    
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-    console.log("[excel import] Total rows parsed:", rows.length);
-    
-    if (rows.length > 0) {
-      console.log("[excel import] Sample row keys:", Object.keys(rows[0]));
-      console.log("[excel import] Sample row data:", JSON.stringify(rows[0], null, 2));
-      
-      // Log first 3 rows for debugging
-      console.log("[excel import] First 3 rows:");
-      for (let i = 0; i < Math.min(3, rows.length); i++) {
-        console.log(`[excel import] Row ${i}:`, JSON.stringify(rows[i], null, 2));
-      }
-    } else {
-      console.log("[excel import] WARNING: No rows parsed from Excel file");
+    const { sheets, skipped } = parseWorkbookSheets(workbook);
+
+    const allRows = sheets.flatMap((s) => s.rows);
+    console.log(
+      "[excel import] Sheets processed:",
+      sheets.length,
+      "skipped:",
+      skipped.length,
+      "data rows:",
+      allRows.length
+    );
+
+    if (sheets.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "No usable sheets found. Each sheet needs a header row with both an admission/account column and a name column.",
+        sheetsSkipped: skipped,
+      });
     }
 
     let matched = 0;
     let unmatched = 0;
     const unmatchedRows = [];
+    const sheetSummary = [];
 
-    // Log the import batch first
     const { data: importRow, error: importError } = await supabase
       .from("excel_imports")
-      .insert({ file_name: req.file.originalname, rows_total: rows.length })
+      .insert({
+        file_name: req.file.originalname,
+        rows_total: allRows.length,
+        details: {
+          sheetsProcessed: sheets.map((s) => s.sheetName),
+          sheetsSkipped: skipped,
+        },
+      })
       .select()
       .single();
 
@@ -256,76 +118,85 @@ async function importExcel(req, res, next) {
       console.error("[excel import] Failed to create import record:", importError);
       throw importError;
     }
-    
-    console.log("[excel import] Import record created with ID:", importRow.id);
 
-    for (const row of rows) {
-      const accountNumber = extractAccountNumber(row);
-      const trackName = extractTrackName(row, sheetName);
-      const studentName = extractStudentName(row, sheetName);
-      const amount = extractAmount(row);
+    for (const sheet of sheets) {
+      let sheetMatched = 0;
+      let sheetUnmatched = 0;
 
-      // Add student name to row data
-      const enrichedRow = { ...row, studentName };
+      for (const parsed of sheet.rows) {
+        const enrichedRow = {
+          ...parsed.rawRow,
+          studentName: parsed.studentName,
+          name: parsed.studentName,
+          amount: parsed.amount,
+          sheetName: parsed.sheetName,
+          trackName: parsed.trackName,
+        };
 
-      if (!accountNumber) {
-        unmatched++;
-        unmatchedRows.push({ 
-          import_id: importRow.id, 
-          account_number: null, 
-          row_data: enrichedRow,
-          sheet_name: sheetName,
-          track_name: trackName
-        });
-        console.log(`[excel import] Row unmatched: no account number. Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
-        continue;
-      }
-
-      // Find transaction(s) with this account number
-      const { data: existing, error: findError } = await supabase
-        .from("transactions")
-        .select("id")
-        .eq("account_number", accountNumber);
-
-      if (findError) {
-        console.error("[excel import] Error finding transactions:", findError);
-        throw findError;
-      }
-
-      if (!existing || existing.length === 0) {
-        unmatched++;
-        unmatchedRows.push({ 
-          import_id: importRow.id, 
-          account_number: accountNumber, 
-          row_data: enrichedRow,
-          sheet_name: sheetName,
-          track_name: trackName
-        });
-        console.log(`[excel import] Row unmatched: no matching transaction. Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
-        continue;
-      }
-
-      // Merge supplementary data into every matching transaction
-      for (const tx of existing) {
-        const { error: updateError } = await supabase
-          .from("transactions")
-          .update({ supplementary_data: enrichedRow, linked_at: new Date().toISOString() })
-          .eq("id", tx.id);
-
-        if (updateError) {
-          console.error("[excel import] Error updating transaction:", updateError);
-          throw updateError;
+        if (!parsed.accountNumber) {
+          unmatched++;
+          sheetUnmatched++;
+          unmatchedRows.push({
+            import_id: importRow.id,
+            account_number: null,
+            row_data: enrichedRow,
+            sheet_name: parsed.sheetName,
+            track_name: parsed.trackName,
+          });
+          continue;
         }
+
+        const { data: existing, error: findError } = await supabase
+          .from("transactions")
+          .select("id")
+          .eq("account_number", parsed.accountNumber);
+
+        if (findError) throw findError;
+
+        if (!existing || existing.length === 0) {
+          unmatched++;
+          sheetUnmatched++;
+          unmatchedRows.push({
+            import_id: importRow.id,
+            account_number: parsed.accountNumber,
+            row_data: enrichedRow,
+            sheet_name: parsed.sheetName,
+            track_name: parsed.trackName,
+          });
+          continue;
+        }
+
+        for (const tx of existing) {
+          const { error: updateError } = await supabase
+            .from("transactions")
+            .update({
+              supplementary_data: enrichedRow,
+              linked_at: new Date().toISOString(),
+            })
+            .eq("id", tx.id);
+
+          if (updateError) throw updateError;
+        }
+
+        matched++;
+        sheetMatched++;
       }
-      matched++;
-      console.log(`[excel import] Row matched: Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}, Matched ${existing.length} transaction(s)`);
+
+      sheetSummary.push({
+        sheet: sheet.sheetName,
+        rows: sheet.rows.length,
+        matched: sheetMatched,
+        unmatched: sheetUnmatched,
+      });
     }
 
     if (unmatchedRows.length > 0) {
       const { error: unmatchedInsertError } = await supabase
         .from("excel_unmatched_rows")
         .insert(unmatchedRows);
-      if (unmatchedInsertError) console.error("[excel import] failed to log unmatched rows:", unmatchedInsertError);
+      if (unmatchedInsertError) {
+        console.error("[excel import] failed to log unmatched rows:", unmatchedInsertError);
+      }
     }
 
     await supabase
@@ -333,49 +204,67 @@ async function importExcel(req, res, next) {
       .update({ rows_matched: matched, rows_unmatched: unmatched })
       .eq("id", importRow.id);
 
-    console.log("[excel import] Import complete. Total:", rows.length, ", Matched:", matched, ", Unmatched:", unmatched);
+    console.log("[excel import] Done. matched:", matched, "unmatched:", unmatched);
     console.log("========== EXCEL IMPORT END ==========");
 
     res.json({
       success: true,
       importId: importRow.id,
-      rowsTotal: rows.length,
+      rowsTotal: allRows.length,
       rowsMatched: matched,
       rowsUnmatched: unmatched,
+      sheets: sheetSummary,
+      sheetsSkipped: skipped,
     });
   } catch (err) {
     console.error("[excel import] Error:", err);
-    console.error("[excel import] Error stack:", err.stack);
     next(err);
   }
 }
 
 /**
  * GET /api/excel/data
- * Returns all imported Excel records
+ * Returns unmatched Excel rows (plus optional ?sheetName= filter).
+ * Matched data lives on transactions.supplementary_data.
  */
 async function getExcelData(req, res, next) {
   try {
-    const { data: rows, error } = await supabase
+    const { sheetName, importId } = req.query;
+
+    let query = supabase
       .from("excel_unmatched_rows")
       .select("id, account_number, row_data, import_id, created_at, sheet_name, track_name")
       .order("created_at", { ascending: false });
 
+    if (sheetName) query = query.eq("sheet_name", sheetName);
+    if (importId) query = query.eq("import_id", importId);
+
+    const { data: rows, error } = await query;
     if (error) throw error;
 
     const formattedData = rows.map((row) => {
       const rowData = row.row_data || {};
-      const amount = extractAmount(rowData);
-      
+      const name =
+        rowData.studentName ||
+        rowData.name ||
+        rowData.Name ||
+        rowData.NAME ||
+        rowData["Student Name"] ||
+        "";
+      const amount =
+        typeof rowData.amount === "number"
+          ? rowData.amount
+          : Number(String(rowData.amount || rowData["TERM 3"] || 0).replace(/,/g, "")) || 0;
+
       return {
         id: row.id,
         accountNumber: row.account_number || "",
-        name: rowData.name || rowData.Name || "",
-        amount: amount,
+        name,
+        amount,
         notes: rowData.notes || rowData.Notes || null,
         category: rowData.category || rowData.Category || null,
-        sheetName: row.sheet_name || null,
-        trackName: row.track_name || null,
+        sheetName: row.sheet_name || rowData.sheetName || null,
+        trackName: row.track_name || rowData.trackName || null,
         importId: row.import_id,
         importedAt: row.created_at,
       };
@@ -391,51 +280,191 @@ async function getExcelData(req, res, next) {
 }
 
 /**
+ * GET /api/excel/imports
+ * Lists import batches so clients can delete by id.
+ */
+async function listExcelImports(req, res, next) {
+  try {
+    const { data, error } = await supabase
+      .from("excel_imports")
+      .select("id, file_name, rows_total, rows_matched, rows_unmatched, imported_at, details")
+      .order("imported_at", { ascending: false });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      imports: (data || []).map((row) => ({
+        id: row.id,
+        fileName: row.file_name,
+        rowsTotal: row.rows_total,
+        rowsMatched: row.rows_matched,
+        rowsUnmatched: row.rows_unmatched,
+        importedAt: row.imported_at,
+        details: row.details,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/excel/sheets
+ * Lists distinct sheet names present in unmatched rows (for delete UI).
+ */
+async function listExcelSheets(req, res, next) {
+  try {
+    const { data, error } = await supabase
+      .from("excel_unmatched_rows")
+      .select("sheet_name")
+      .not("sheet_name", "is", null);
+
+    if (error) throw error;
+
+    const counts = {};
+    for (const row of data || []) {
+      const name = row.sheet_name;
+      if (!name) continue;
+      counts[name] = (counts[name] || 0) + 1;
+    }
+
+    const sheets = Object.entries(counts)
+      .map(([sheetName, rowCount]) => ({ sheetName, rowCount }))
+      .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
+
+    res.json({ success: true, sheets });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * DELETE /api/excel/import/:id
- * Deletes an Excel import and all its associated unmatched rows
+ * Deletes an Excel import batch and its unmatched rows.
+ * Also clears supplementary_data on transactions linked from that import's unmatched path
+ * is not enough — matched data is on transactions. We clear any tx whose
+ * supplementary_data.sheetName appears only in this import's details when possible;
+ * primarily we wipe unmatched rows + the import record.
  */
 async function deleteExcelImport(req, res, next) {
   try {
     const { id } = req.params;
 
-    // First delete unmatched rows associated with this import
+    // Clear matched supplementary_data that came from this import's sheets when
+    // the row still carries sheetName (written by the fixed importer).
+    const { data: importRow } = await supabase
+      .from("excel_imports")
+      .select("id, details")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (!importRow) {
+      return res.status(404).json({ success: false, message: "Import not found" });
+    }
+
+    const sheetNames = importRow.details?.sheetsProcessed || [];
+    let clearedTransactions = 0;
+
+    if (sheetNames.length > 0) {
+      const { data: txs, error: txErr } = await supabase
+        .from("transactions")
+        .select("id, supplementary_data")
+        .not("supplementary_data", "is", null);
+
+      if (txErr) throw txErr;
+
+      for (const tx of txs || []) {
+        const sheet = tx.supplementary_data?.sheetName;
+        if (sheet && sheetNames.includes(sheet)) {
+          const { error: clearErr } = await supabase
+            .from("transactions")
+            .update({ supplementary_data: null, linked_at: null })
+            .eq("id", tx.id);
+          if (clearErr) throw clearErr;
+          clearedTransactions++;
+        }
+      }
+    }
+
     const { error: deleteRowsError } = await supabase
       .from("excel_unmatched_rows")
       .delete()
       .eq("import_id", id);
 
-    if (deleteRowsError) {
-      console.error("[deleteExcelImport] Error deleting unmatched rows:", deleteRowsError);
-      throw deleteRowsError;
-    }
+    if (deleteRowsError) throw deleteRowsError;
 
-    // Then delete the import record
     const { error: deleteImportError } = await supabase
       .from("excel_imports")
       .delete()
       .eq("id", id);
 
-    if (deleteImportError) {
-      console.error("[deleteExcelImport] Error deleting import:", deleteImportError);
-      throw deleteImportError;
-    }
-
-    console.log(`[deleteExcelImport] Successfully deleted import ${id}`);
+    if (deleteImportError) throw deleteImportError;
 
     res.json({
       success: true,
       message: "Excel import deleted successfully",
+      clearedTransactions,
     });
   } catch (err) {
-    console.error("[deleteExcelImport] Error:", err);
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/excel/sheets/:sheetName
+ * Deletes all unmatched rows for a workbook sheet (class/stream name),
+ * and clears matching supplementary_data on transactions.
+ */
+async function deleteExcelSheet(req, res, next) {
+  try {
+    const sheetName = decodeURIComponent(req.params.sheetName || "").trim();
+    if (!sheetName) {
+      return res.status(400).json({ success: false, message: "sheetName is required" });
+    }
+
+    const { data: deletedRows, error: deleteRowsError } = await supabase
+      .from("excel_unmatched_rows")
+      .delete()
+      .eq("sheet_name", sheetName)
+      .select("id");
+
+    if (deleteRowsError) throw deleteRowsError;
+
+    let clearedTransactions = 0;
+    const { data: txs, error: txErr } = await supabase
+      .from("transactions")
+      .select("id, supplementary_data")
+      .not("supplementary_data", "is", null);
+
+    if (txErr) throw txErr;
+
+    for (const tx of txs || []) {
+      const sheet = tx.supplementary_data?.sheetName;
+      if (sheet === sheetName) {
+        const { error: clearErr } = await supabase
+          .from("transactions")
+          .update({ supplementary_data: null, linked_at: null })
+          .eq("id", tx.id);
+        if (clearErr) throw clearErr;
+        clearedTransactions++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Deleted Excel sheet "${sheetName}"`,
+      deletedUnmatchedRows: (deletedRows || []).length,
+      clearedTransactions,
+    });
+  } catch (err) {
     next(err);
   }
 }
 
 /**
  * POST /api/excel/debug
- * Debug endpoint to analyze Excel file structure without importing
- * Returns the parsed structure for debugging
+ * Analyze Excel structure without writing to the DB.
  */
 async function debugExcel(req, res, next) {
   try {
@@ -443,60 +472,58 @@ async function debugExcel(req, res, next) {
       return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
-    console.log("========== EXCEL DEBUG START ==========");
-    console.log("[debug] File received:", req.file.originalname);
-    console.log("[debug] File size:", req.file.size);
-    console.log("[debug] MIME type:", req.file.mimetype);
-
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    console.log("[debug] Workbook loaded successfully");
-    
-    const sheetNames = workbook.SheetNames;
-    console.log("[debug] All sheet names:", sheetNames);
-    
-    const sheetData = [];
-    
-    for (const sheetName of sheetNames) {
-      const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-      
-      console.log(`[debug] Sheet "${sheetName}": ${rows.length} rows`);
-      
-      if (rows.length > 0) {
-        console.log(`[debug] Sheet "${sheetName}" keys:`, Object.keys(rows[0]));
-        console.log(`[debug] Sheet "${sheetName}" first row:`, JSON.stringify(rows[0], null, 2));
-        
-        sheetData.push({
-          sheetName,
-          rowCount: rows.length,
-          columns: Object.keys(rows[0]),
-          sampleRows: rows.slice(0, 3),
-        });
-      } else {
-        sheetData.push({
-          sheetName,
-          rowCount: 0,
-          columns: [],
-          sampleRows: [],
-        });
-      }
+    const { sheets, skipped } = parseWorkbookSheets(workbook);
+
+    const sheetData = sheets.map((s) => ({
+      sheetName: s.sheetName,
+      headerRowIndex: s.headerRowIndex,
+      columns: s.columns,
+      rowCount: s.rows.length,
+      sampleRows: s.rows.slice(0, 3).map((r) => ({
+        accountNumber: r.accountNumber,
+        studentName: r.studentName,
+        trackName: r.trackName,
+        amount: r.amount,
+        rawRow: r.rawRow,
+      })),
+    }));
+
+    // Also show naive sheet_to_json view for the first sheet (helps spot header issues)
+    const firstSheetName = workbook.SheetNames[0];
+    let naiveFirstSheet = null;
+    if (firstSheetName) {
+      const naiveRows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: null });
+      naiveFirstSheet = {
+        sheetName: firstSheetName,
+        note: "Naive parse assuming row 1 is header (old broken behaviour)",
+        rowCount: naiveRows.length,
+        columns: naiveRows[0] ? Object.keys(naiveRows[0]) : [],
+        sampleRows: naiveRows.slice(0, 2),
+      };
     }
-    
-    console.log("========== EXCEL DEBUG END ==========");
 
     res.json({
       success: true,
       fileName: req.file.originalname,
       fileSize: req.file.size,
       mimeType: req.file.mimetype,
-      sheetCount: sheetNames.length,
+      sheetCount: workbook.SheetNames.length,
       sheets: sheetData,
+      sheetsSkipped: skipped,
+      naiveFirstSheet,
     });
   } catch (err) {
-    console.error("[debug] Error:", err);
-    console.error("[debug] Error stack:", err.stack);
     next(err);
   }
 }
 
-module.exports = { importExcel, getExcelData, deleteExcelImport, debugExcel };
+module.exports = {
+  importExcel,
+  getExcelData,
+  listExcelImports,
+  listExcelSheets,
+  deleteExcelImport,
+  deleteExcelSheet,
+  debugExcel,
+};
