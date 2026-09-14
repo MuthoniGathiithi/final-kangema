@@ -125,11 +125,14 @@ async function importExcel(req, res, next) {
       return res.status(400).json({ success: false, message: "No file uploaded (field name must be 'file')" });
     }
 
+    console.log("========== EXCEL IMPORT START ==========");
     console.log("[excel import] File received:", req.file.originalname);
     console.log("[excel import] File size:", req.file.size);
     console.log("[excel import] MIME type:", req.file.mimetype);
+    console.log("[excel import] Buffer length:", req.file.buffer.length);
 
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    console.log("[excel import] Workbook loaded successfully");
     const sheetName = workbook.SheetNames[0];
     console.log("[excel import] Sheet name:", sheetName);
     console.log("[excel import] All sheet names:", workbook.SheetNames);
@@ -141,6 +144,14 @@ async function importExcel(req, res, next) {
     if (rows.length > 0) {
       console.log("[excel import] Sample row keys:", Object.keys(rows[0]));
       console.log("[excel import] Sample row data:", JSON.stringify(rows[0], null, 2));
+      
+      // Log first 3 rows for debugging
+      console.log("[excel import] First 3 rows:");
+      for (let i = 0; i < Math.min(3, rows.length); i++) {
+        console.log(`[excel import] Row ${i}:`, JSON.stringify(rows[i], null, 2));
+      }
+    } else {
+      console.log("[excel import] WARNING: No rows parsed from Excel file");
     }
 
     let matched = 0;
@@ -232,6 +243,7 @@ async function importExcel(req, res, next) {
       .eq("id", importRow.id);
 
     console.log("[excel import] Import complete. Total:", rows.length, ", Matched:", matched, ", Unmatched:", unmatched);
+    console.log("========== EXCEL IMPORT END ==========");
 
     res.json({
       success: true,
@@ -242,6 +254,7 @@ async function importExcel(req, res, next) {
     });
   } catch (err) {
     console.error("[excel import] Error:", err);
+    console.error("[excel import] Error stack:", err.stack);
     next(err);
   }
 }
@@ -286,4 +299,71 @@ async function getExcelData(req, res, next) {
   }
 }
 
-module.exports = { importExcel, getExcelData };
+/**
+ * POST /api/excel/debug
+ * Debug endpoint to analyze Excel file structure without importing
+ * Returns the parsed structure for debugging
+ */
+async function debugExcel(req, res, next) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    console.log("========== EXCEL DEBUG START ==========");
+    console.log("[debug] File received:", req.file.originalname);
+    console.log("[debug] File size:", req.file.size);
+    console.log("[debug] MIME type:", req.file.mimetype);
+
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    console.log("[debug] Workbook loaded successfully");
+    
+    const sheetNames = workbook.SheetNames;
+    console.log("[debug] All sheet names:", sheetNames);
+    
+    const sheetData = [];
+    
+    for (const sheetName of sheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+      
+      console.log(`[debug] Sheet "${sheetName}": ${rows.length} rows`);
+      
+      if (rows.length > 0) {
+        console.log(`[debug] Sheet "${sheetName}" keys:`, Object.keys(rows[0]));
+        console.log(`[debug] Sheet "${sheetName}" first row:`, JSON.stringify(rows[0], null, 2));
+        
+        sheetData.push({
+          sheetName,
+          rowCount: rows.length,
+          columns: Object.keys(rows[0]),
+          sampleRows: rows.slice(0, 3),
+        });
+      } else {
+        sheetData.push({
+          sheetName,
+          rowCount: 0,
+          columns: [],
+          sampleRows: [],
+        });
+      }
+    }
+    
+    console.log("========== EXCEL DEBUG END ==========");
+
+    res.json({
+      success: true,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      mimeType: req.file.mimetype,
+      sheetCount: sheetNames.length,
+      sheets: sheetData,
+    });
+  } catch (err) {
+    console.error("[debug] Error:", err);
+    console.error("[debug] Error stack:", err.stack);
+    next(err);
+  }
+}
+
+module.exports = { importExcel, getExcelData, debugExcel };
