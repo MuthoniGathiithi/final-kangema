@@ -91,6 +91,47 @@ function extractTrackName(row, sheetName) {
 }
 
 /**
+ * Extracts student name from row data
+ */
+function extractStudentName(row, sheetName) {
+  const candidates = [
+    "name",
+    "student name",
+    "student_name",
+    "studentname",
+    "full name",
+    "full_name",
+    "fullname",
+  ];
+  const keys = Object.keys(row);
+  console.log("[extractStudentName] Available keys:", keys);
+  console.log("[extractStudentName] Sheet name:", sheetName);
+  
+  for (const key of keys) {
+    const normalizedKey = key.trim().toLowerCase();
+    if (candidates.includes(normalizedKey)) {
+      const value = String(row[key]).trim();
+      console.log(`[extractStudentName] Found student name in column "${key}": ${value}`);
+      return value;
+    }
+  }
+  
+  // Try to find column that contains the sheet name (e.g., "GRADE 10 - KENYATTA")
+  for (const key of keys) {
+    if (key.includes(sheetName) || key.includes("GRADE")) {
+      const value = String(row[key]).trim();
+      if (value && value !== "NAME") {
+        console.log(`[extractStudentName] Found student name in sheet-named column "${key}": ${value}`);
+        return value;
+      }
+    }
+  }
+  
+  console.log("[extractStudentName] No student name column found");
+  return null;
+}
+
+/**
  * Extracts amount from row data - handles currency symbols, commas, and various formats
  */
 function extractAmount(row) {
@@ -221,18 +262,22 @@ async function importExcel(req, res, next) {
     for (const row of rows) {
       const accountNumber = extractAccountNumber(row);
       const trackName = extractTrackName(row, sheetName);
+      const studentName = extractStudentName(row, sheetName);
       const amount = extractAmount(row);
+
+      // Add student name to row data
+      const enrichedRow = { ...row, studentName };
 
       if (!accountNumber) {
         unmatched++;
         unmatchedRows.push({ 
           import_id: importRow.id, 
           account_number: null, 
-          row_data: row,
+          row_data: enrichedRow,
           sheet_name: sheetName,
           track_name: trackName
         });
-        console.log(`[excel import] Row unmatched: no account number. Track: ${trackName}, Amount: ${amount}`);
+        console.log(`[excel import] Row unmatched: no account number. Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
         continue;
       }
 
@@ -252,11 +297,11 @@ async function importExcel(req, res, next) {
         unmatchedRows.push({ 
           import_id: importRow.id, 
           account_number: accountNumber, 
-          row_data: row,
+          row_data: enrichedRow,
           sheet_name: sheetName,
           track_name: trackName
         });
-        console.log(`[excel import] Row unmatched: no matching transaction. Account: ${accountNumber}, Track: ${trackName}, Amount: ${amount}`);
+        console.log(`[excel import] Row unmatched: no matching transaction. Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
         continue;
       }
 
@@ -264,7 +309,7 @@ async function importExcel(req, res, next) {
       for (const tx of existing) {
         const { error: updateError } = await supabase
           .from("transactions")
-          .update({ supplementary_data: row, linked_at: new Date().toISOString() })
+          .update({ supplementary_data: enrichedRow, linked_at: new Date().toISOString() })
           .eq("id", tx.id);
 
         if (updateError) {
@@ -273,7 +318,7 @@ async function importExcel(req, res, next) {
         }
       }
       matched++;
-      console.log(`[excel import] Row matched: Account: ${accountNumber}, Track: ${trackName}, Amount: ${amount}, Matched ${existing.length} transaction(s)`);
+      console.log(`[excel import] Row matched: Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}, Matched ${existing.length} transaction(s)`);
     }
 
     if (unmatchedRows.length > 0) {
