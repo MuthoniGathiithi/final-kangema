@@ -20,6 +20,11 @@ function extractAccountNumber(row) {
     "billref",
     "bill ref number",
     "billrefnumber",
+    "adm",
+    "adm ",
+    "admission",
+    "admission no",
+    "admission number",
   ];
   const keys = Object.keys(row);
   console.log("[extractAccountNumber] Available keys:", keys);
@@ -31,6 +36,16 @@ function extractAccountNumber(row) {
       return value;
     }
   }
+  // Try to find by column position (ADM is usually the second column)
+  const keysArray = Object.keys(row);
+  if (keysArray.length >= 2) {
+    const secondKey = keysArray[1];
+    const value = String(row[secondKey]).trim();
+    if (value && !isNaN(Number(value))) {
+      console.log(`[extractAccountNumber] Using second column "${secondKey}" as account number: ${value}`);
+      return value;
+    }
+  }
   console.log("[extractAccountNumber] No account number column found");
   return null;
 }
@@ -38,7 +53,7 @@ function extractAccountNumber(row) {
 /**
  * Extracts track name from row data
  */
-function extractTrackName(row) {
+function extractTrackName(row, sheetName) {
   const candidates = [
     "track",
     "track name",
@@ -54,6 +69,8 @@ function extractTrackName(row) {
   ];
   const keys = Object.keys(row);
   console.log("[extractTrackName] Available keys:", keys);
+  console.log("[extractTrackName] Sheet name (fallback):", sheetName);
+  
   for (const key of keys) {
     const normalizedKey = key.trim().toLowerCase();
     if (candidates.includes(normalizedKey)) {
@@ -62,6 +79,13 @@ function extractTrackName(row) {
       return value;
     }
   }
+  
+  // If no column found, use the sheet name as track name
+  if (sheetName) {
+    console.log(`[extractTrackName] Using sheet name as track name: ${sheetName}`);
+    return sheetName;
+  }
+  
   console.log("[extractTrackName] No track name column found");
   return null;
 }
@@ -79,6 +103,13 @@ function extractAmount(row) {
     "fee",
     "payment",
     "balance",
+    "term 3",
+    "term 1",
+    "term 2",
+    "term",
+    "0.p.bal",
+    "p.p.bal",
+    "c.p.bal",
   ];
   const keys = Object.keys(row);
   console.log("[extractAmount] Available keys:", keys);
@@ -111,6 +142,21 @@ function extractAmount(row) {
       return result;
     }
   }
+  
+  // Try to find by column position (TERM 3 is usually the 6th column, index 5)
+  const keysArray = Object.keys(row);
+  if (keysArray.length >= 6) {
+    const sixthKey = keysArray[5];
+    const value = row[sixthKey];
+    if (value !== null && value !== undefined && value !== "") {
+      const parsed = parseFloat(String(value).replace(/,/g, ""));
+      if (!isNaN(parsed) && parsed > 0) {
+        console.log(`[extractAmount] Using sixth column "${sixthKey}" as amount: ${parsed}`);
+        return parsed;
+      }
+    }
+  }
+  
   console.log("[extractAmount] No amount column found, returning 0");
   return 0;
 }
@@ -174,7 +220,7 @@ async function importExcel(req, res, next) {
 
     for (const row of rows) {
       const accountNumber = extractAccountNumber(row);
-      const trackName = extractTrackName(row);
+      const trackName = extractTrackName(row, sheetName);
       const amount = extractAmount(row);
 
       if (!accountNumber) {
