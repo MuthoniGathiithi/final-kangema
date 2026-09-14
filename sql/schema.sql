@@ -67,5 +67,7 @@ create table if not exists excel_unmatched_rows (
   import_id uuid references excel_imports(id) on delete cascade,
   account_number text,
   row_data jsonb,
+  sheet_name text,
+  track_name text,
   created_at timestamptz not null default now()
 );

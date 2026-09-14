@@ -13,13 +13,25 @@ function extractAccountNumber(row) {
     "acc no",
     "account",
     "reference",
+    "ref",
+    "ref no",
+    "refno",
+    "bill ref",
+    "billref",
+    "bill ref number",
+    "billrefnumber",
   ];
   const keys = Object.keys(row);
+  console.log("[extractAccountNumber] Available keys:", keys);
   for (const key of keys) {
-    if (candidates.includes(key.trim().toLowerCase())) {
-      return String(row[key]).trim();
+    const normalizedKey = key.trim().toLowerCase();
+    if (candidates.includes(normalizedKey)) {
+      const value = String(row[key]).trim();
+      console.log(`[extractAccountNumber] Found account number in column "${key}": ${value}`);
+      return value;
     }
   }
+  console.log("[extractAccountNumber] No account number column found");
   return null;
 }
 
@@ -33,18 +45,29 @@ function extractTrackName(row) {
     "track_name",
     "trackname",
     "name",
+    "student name",
+    "student_name",
+    "studentname",
+    "full name",
+    "full_name",
+    "fullname",
   ];
   const keys = Object.keys(row);
+  console.log("[extractTrackName] Available keys:", keys);
   for (const key of keys) {
-    if (candidates.includes(key.trim().toLowerCase())) {
-      return String(row[key]).trim();
+    const normalizedKey = key.trim().toLowerCase();
+    if (candidates.includes(normalizedKey)) {
+      const value = String(row[key]).trim();
+      console.log(`[extractTrackName] Found track name in column "${key}": ${value}`);
+      return value;
     }
   }
+  console.log("[extractTrackName] No track name column found");
   return null;
 }
 
 /**
- * Extracts amount from row data
+ * Extracts amount from row data - handles currency symbols, commas, and various formats
  */
 function extractAmount(row) {
   const candidates = [
@@ -52,14 +75,43 @@ function extractAmount(row) {
     "ksh",
     "kes",
     "value",
+    "total",
+    "fee",
+    "payment",
+    "balance",
   ];
   const keys = Object.keys(row);
+  console.log("[extractAmount] Available keys:", keys);
   for (const key of keys) {
-    if (candidates.includes(key.trim().toLowerCase())) {
-      const value = parseFloat(row[key]);
-      return isNaN(value) ? 0 : value;
+    const normalizedKey = key.trim().toLowerCase();
+    if (candidates.includes(normalizedKey)) {
+      let value = row[key];
+      console.log(`[extractAmount] Found amount column "${key}" with raw value:`, value);
+      
+      // Handle null/undefined
+      if (value === null || value === undefined || value === "") {
+        console.log("[extractAmount] Value is null/undefined/empty, returning 0");
+        return 0;
+      }
+      
+      // Convert to string and clean
+      value = String(value).trim();
+      
+      // Remove currency symbols and commas
+      value = value.replace(/[Kk][Ss][Hh]/g, "");
+      value = value.replace(/[Kk][Ee][Ss]/g, "");
+      value = value.replace(/[Kk][Ss]/g, "");
+      value = value.replace(/[$£€]/g, "");
+      value = value.replace(/,/g, "");
+      value = value.trim();
+      
+      const parsed = parseFloat(value);
+      const result = isNaN(parsed) ? 0 : parsed;
+      console.log(`[extractAmount] Parsed amount: ${result}`);
+      return result;
     }
   }
+  console.log("[extractAmount] No amount column found, returning 0");
   return 0;
 }
 
@@ -73,10 +125,23 @@ async function importExcel(req, res, next) {
       return res.status(400).json({ success: false, message: "No file uploaded (field name must be 'file')" });
     }
 
+    console.log("[excel import] File received:", req.file.originalname);
+    console.log("[excel import] File size:", req.file.size);
+    console.log("[excel import] MIME type:", req.file.mimetype);
+
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];
+    console.log("[excel import] Sheet name:", sheetName);
+    console.log("[excel import] All sheet names:", workbook.SheetNames);
+    
     const sheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+    console.log("[excel import] Total rows parsed:", rows.length);
+    
+    if (rows.length > 0) {
+      console.log("[excel import] Sample row keys:", Object.keys(rows[0]));
+      console.log("[excel import] Sample row data:", JSON.stringify(rows[0], null, 2));
+    }
 
     let matched = 0;
     let unmatched = 0;
@@ -89,7 +154,12 @@ async function importExcel(req, res, next) {
       .select()
       .single();
 
-    if (importError) throw importError;
+    if (importError) {
+      console.error("[excel import] Failed to create import record:", importError);
+      throw importError;
+    }
+    
+    console.log("[excel import] Import record created with ID:", importRow.id);
 
     for (const row of rows) {
       const accountNumber = extractAccountNumber(row);
@@ -105,6 +175,7 @@ async function importExcel(req, res, next) {
           sheet_name: sheetName,
           track_name: trackName
         });
+        console.log(`[excel import] Row unmatched: no account number. Track: ${trackName}, Amount: ${amount}`);
         continue;
       }
 
@@ -114,7 +185,10 @@ async function importExcel(req, res, next) {
         .select("id")
         .eq("account_number", accountNumber);
 
-      if (findError) throw findError;
+      if (findError) {
+        console.error("[excel import] Error finding transactions:", findError);
+        throw findError;
+      }
 
       if (!existing || existing.length === 0) {
         unmatched++;
@@ -125,6 +199,7 @@ async function importExcel(req, res, next) {
           sheet_name: sheetName,
           track_name: trackName
         });
+        console.log(`[excel import] Row unmatched: no matching transaction. Account: ${accountNumber}, Track: ${trackName}, Amount: ${amount}`);
         continue;
       }
 
@@ -135,9 +210,13 @@ async function importExcel(req, res, next) {
           .update({ supplementary_data: row, linked_at: new Date().toISOString() })
           .eq("id", tx.id);
 
-        if (updateError) throw updateError;
+        if (updateError) {
+          console.error("[excel import] Error updating transaction:", updateError);
+          throw updateError;
+        }
       }
       matched++;
+      console.log(`[excel import] Row matched: Account: ${accountNumber}, Track: ${trackName}, Amount: ${amount}, Matched ${existing.length} transaction(s)`);
     }
 
     if (unmatchedRows.length > 0) {
@@ -152,6 +231,8 @@ async function importExcel(req, res, next) {
       .update({ rows_matched: matched, rows_unmatched: unmatched })
       .eq("id", importRow.id);
 
+    console.log("[excel import] Import complete. Total:", rows.length, ", Matched:", matched, ", Unmatched:", unmatched);
+
     res.json({
       success: true,
       importId: importRow.id,
@@ -160,6 +241,7 @@ async function importExcel(req, res, next) {
       rowsUnmatched: unmatched,
     });
   } catch (err) {
+    console.error("[excel import] Error:", err);
     next(err);
   }
 }
