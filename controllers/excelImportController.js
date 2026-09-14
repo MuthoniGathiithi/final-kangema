@@ -24,12 +24,48 @@ function extractAccountNumber(row) {
 }
 
 /**
+ * Extracts track name from row data
+ */
+function extractTrackName(row) {
+  const candidates = [
+    "track",
+    "track name",
+    "track_name",
+    "trackname",
+    "name",
+  ];
+  const keys = Object.keys(row);
+  for (const key of keys) {
+    if (candidates.includes(key.trim().toLowerCase())) {
+      return String(row[key]).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts amount from row data
+ */
+function extractAmount(row) {
+  const candidates = [
+    "amount",
+    "ksh",
+    "kes",
+    "value",
+  ];
+  const keys = Object.keys(row);
+  for (const key of keys) {
+    if (candidates.includes(key.trim().toLowerCase())) {
+      const value = parseFloat(row[key]);
+      return isNaN(value) ? 0 : value;
+    }
+  }
+  return 0;
+}
+
+/**
  * POST /api/excel/import
  * multipart/form-data with a single field "file" (.xlsx or .xls)
- *
- * Every row must contain an account-number column (see extractAccountNumber above).
- * All other columns in the row are stored as-is in supplementary_data, and merged
- * into the matching transaction (matched by account_number).
  */
 async function importExcel(req, res, next) {
   try {
@@ -57,10 +93,18 @@ async function importExcel(req, res, next) {
 
     for (const row of rows) {
       const accountNumber = extractAccountNumber(row);
+      const trackName = extractTrackName(row);
+      const amount = extractAmount(row);
 
       if (!accountNumber) {
         unmatched++;
-        unmatchedRows.push({ import_id: importRow.id, account_number: null, row_data: row });
+        unmatchedRows.push({ 
+          import_id: importRow.id, 
+          account_number: null, 
+          row_data: row,
+          sheet_name: sheetName,
+          track_name: trackName
+        });
         continue;
       }
 
@@ -74,7 +118,13 @@ async function importExcel(req, res, next) {
 
       if (!existing || existing.length === 0) {
         unmatched++;
-        unmatchedRows.push({ import_id: importRow.id, account_number: accountNumber, row_data: row });
+        unmatchedRows.push({ 
+          import_id: importRow.id, 
+          account_number: accountNumber, 
+          row_data: row,
+          sheet_name: sheetName,
+          track_name: trackName
+        });
         continue;
       }
 
@@ -122,20 +172,24 @@ async function getExcelData(req, res, next) {
   try {
     const { data: rows, error } = await supabase
       .from("excel_unmatched_rows")
-      .select("id, account_number, row_data, import_id, created_at")
+      .select("id, account_number, row_data, import_id, created_at, sheet_name, track_name")
       .order("created_at", { ascending: false });
 
     if (error) throw error;
 
     const formattedData = rows.map((row) => {
       const rowData = row.row_data || {};
+      const amount = extractAmount(rowData);
+      
       return {
         id: row.id,
         accountNumber: row.account_number || "",
         name: rowData.name || rowData.Name || "",
-        amount: rowData.amount || rowData.Amount || 0,
+        amount: amount,
         notes: rowData.notes || rowData.Notes || null,
         category: rowData.category || rowData.Category || null,
+        sheetName: row.sheet_name || null,
+        trackName: row.track_name || null,
         importId: row.import_id,
         importedAt: row.created_at,
       };
