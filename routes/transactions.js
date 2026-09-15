@@ -7,6 +7,7 @@ const {
   createManualTransaction,
   exportTransactions,
   getTransactionStats,
+  getTotalAmount,
 } = require("../controllers/transactionsController");
 
 router.use(requireApiKey);

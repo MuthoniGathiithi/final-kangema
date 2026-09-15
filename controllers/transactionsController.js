@@ -175,6 +175,40 @@ async function createManualTransaction(req, res, next) {
 }
 
 /**
+ * GET /api/stats/total-amount
+ * Returns total amount of all unique transactions
+ */
+async function getTotalAmount(req, res, next) {
+  try {
+    // Get all transactions
+    const { data: allTx, error: allError } = await supabase
+      .from("transactions")
+      .select("amount, transaction_code");
+
+    if (allError) throw allError;
+
+    // Deduplicate by transaction_code
+    const uniqueTransactions = new Map();
+    for (const tx of allTx || []) {
+      const key = tx.transaction_code || `tx-${tx.amount}`;
+      if (!uniqueTransactions.has(key)) {
+        uniqueTransactions.set(key, tx);
+      }
+    }
+
+    const uniqueArray = Array.from(uniqueTransactions.values());
+    const totalAmount = uniqueArray.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+
+    res.json({
+      success: true,
+      total_amount: totalAmount,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/transactions/stats
  * Returns dashboard statistics: counts by source and total amount
  */
@@ -288,4 +322,4 @@ async function exportTransactions(req, res, next) {
   }
 }
 
-module.exports = { listTransactions, getTransaction, createManualTransaction, exportTransactions, getTransactionStats, formatTransaction };
+module.exports = { listTransactions, getTransaction, createManualTransaction, exportTransactions, getTransactionStats, getTotalAmount, formatTransaction };
