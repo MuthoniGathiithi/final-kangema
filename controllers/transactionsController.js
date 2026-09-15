@@ -113,6 +113,7 @@ async function createManualTransaction(req, res, next) {
       accountNumber,
       amount,
       msisdn,
+      payerName,
       firstName,
       middleName,
       lastName,
@@ -131,6 +132,18 @@ async function createManualTransaction(req, res, next) {
 
     const isSms = source === "sms";
 
+    // Handle payerName: if provided, split it into first/middle/last names
+    let finalFirstName = firstName;
+    let finalMiddleName = middleName;
+    let finalLastName = lastName;
+
+    if (payerName && !firstName) {
+      const nameParts = payerName.trim().split(/\s+/);
+      finalFirstName = nameParts[0] || null;
+      finalMiddleName = nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : null;
+      finalLastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : null;
+    }
+
     const { data, error } = await supabase
       .from("transactions")
       .insert({
@@ -138,9 +151,9 @@ async function createManualTransaction(req, res, next) {
         account_number: accountNumber,
         amount,
         msisdn: msisdn || null,
-        first_name: firstName || null,
-        middle_name: middleName || null,
-        last_name: lastName || null,
+        first_name: finalFirstName || null,
+        middle_name: finalMiddleName || null,
+        last_name: finalLastName || null,
         transaction_time: time ? new Date(time).toISOString() : new Date().toISOString(),
         business_shortcode: businessShortcode || null,
         source: isSms ? "sms" : "manual",
