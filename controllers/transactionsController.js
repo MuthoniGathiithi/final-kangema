@@ -158,7 +158,7 @@ async function createManualTransaction(req, res, next) {
         business_shortcode: businessShortcode || null,
         source: isSms ? "sms" : "manual",
         raw_payload: rawPayload || null,
-        raw_message: isSms ? rawMessage || null : null,
+        raw_message: rawMessage || null,
       }, {
         onConflict: "transaction_code",
         ignoreDuplicates: false
