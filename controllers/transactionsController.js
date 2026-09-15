@@ -227,10 +227,16 @@ async function getTransactionStats(req, res, next) {
 
     console.log("[getTransactionStats] Total transactions fetched:", allTx?.length || 0);
     
-    // Log sample source values for debugging
+    // Log ALL unique source values for debugging
     if (allTx && allTx.length > 0) {
-      const sampleSources = [...new Set(allTx.slice(0, 10).map(tx => tx.source))];
-      console.log("[getTransactionStats] Sample source values:", sampleSources);
+      const allSources = allTx.map(tx => tx.source);
+      const uniqueSources = [...new Set(allSources)];
+      const sourceCounts = {};
+      allSources.forEach(s => {
+        sourceCounts[s] = (sourceCounts[s] || 0) + 1;
+      });
+      console.log("[getTransactionStats] ALL source values:", uniqueSources);
+      console.log("[getTransactionStats] Source counts:", sourceCounts);
     }
 
     // Deduplicate by transaction_code and calculate totals
