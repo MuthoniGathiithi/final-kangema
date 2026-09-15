@@ -175,6 +175,52 @@ async function createManualTransaction(req, res, next) {
 }
 
 /**
+ * GET /api/transactions/stats
+ * Returns dashboard statistics: counts by source and total amount
+ */
+async function getTransactionStats(req, res, next) {
+  try {
+    // Get total count by source
+    const { data: allTx, error: allError } = await supabase
+      .from("transactions")
+      .select("source, amount, transaction_code");
+
+    if (allError) throw allError;
+
+    // Deduplicate by transaction_code and calculate totals
+    const uniqueTransactions = new Map();
+    for (const tx of allTx || []) {
+      const key = tx.transaction_code || `${tx.source}-${tx.amount}-${tx.account_number}`;
+      if (!uniqueTransactions.has(key)) {
+        uniqueTransactions.set(key, tx);
+      }
+    }
+
+    const uniqueArray = Array.from(uniqueTransactions.values());
+    
+    const totalCount = uniqueArray.length;
+    const smsCount = uniqueArray.filter(tx => tx.source === "sms").length;
+    const darajaCount = uniqueArray.filter(tx => tx.source === "daraja").length;
+    const manualCount = uniqueArray.filter(tx => tx.source === "manual").length;
+    
+    const totalAmount = uniqueArray.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+
+    res.json({
+      success: true,
+      stats: {
+        totalTransactions: totalCount,
+        smsTransactions: smsCount,
+        darajaTransactions: darajaCount,
+        manualTransactions: manualCount,
+        totalAmount: totalAmount,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/transactions/export
  * Exports all transactions as an Excel (.xlsx) file
  */
@@ -242,4 +288,4 @@ async function exportTransactions(req, res, next) {
   }
 }
 
-module.exports = { listTransactions, getTransaction, createManualTransaction, exportTransactions, formatTransaction };
+module.exports = { listTransactions, getTransaction, createManualTransaction, exportTransactions, getTransactionStats, formatTransaction };
