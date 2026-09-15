@@ -8,7 +8,6 @@ const transactionsRoutes = require("./routes/transactions");
 const mpesaRoutes = require("./routes/mpesa");
 const excelImportRoutes = require("./routes/excelImport");
 const errorHandler = require("./middleware/errorHandler");
-const studentsRoutes = require("./routes/students");
 
 const app = express();
 
@@ -51,7 +50,6 @@ app.get("/api/debug-env", (req, res) => {
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/daraja", mpesaRoutes);
 app.use("/api/excel", excelImportRoutes);
-app.use("/api/students", studentsRoutes);
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `No route for ${req.method} ${req.originalUrl}` });
 });
