@@ -699,12 +699,16 @@ async function getStudentById(req, res, next) {
  */
 async function listExcelSheets(req, res, next) {
   try {
+    console.log("[listExcelSheets] Fetching sheets from students table");
     const { data, error } = await supabase
       .from("students")
       .select("sheet_name")
       .not("sheet_name", "is", null);
 
     if (error) throw error;
+
+    console.log("[listExcelSheets] Raw data from students table:", data?.length || 0, "rows");
+    console.log("[listExcelSheets] Sample sheet_names:", data?.slice(0, 5).map(r => r.sheet_name));
 
     const counts = {};
     for (const row of data || []) {
@@ -713,12 +717,17 @@ async function listExcelSheets(req, res, next) {
       counts[name] = (counts[name] || 0) + 1;
     }
 
+    console.log("[listExcelSheets] Sheet counts:", counts);
+
     const sheets = Object.entries(counts)
       .map(([sheetName, rowCount]) => ({ sheetName, rowCount }))
       .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
 
+    console.log("[listExcelSheets] Returning sheets:", sheets);
+
     res.json({ success: true, sheets });
   } catch (err) {
+    console.error("[listExcelSheets] Error:", err);
     next(err);
   }
 }
