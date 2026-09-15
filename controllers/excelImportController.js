@@ -131,7 +131,7 @@ async function importExcel(req, res, next) {
   const startTime = Date.now();
   let responseSent = false;
   const MAX_EXECUTION_TIME = 55000; // 55 seconds (Vercel timeout is ~60s)
-  const BATCH_SIZE = 50; // Process rows in batches to avoid timeout
+  const BATCH_SIZE = 100; // Process rows in batches for bulk upserts
 
   // Set up timeout handler
   const timeoutId = setTimeout(() => {
@@ -169,6 +169,8 @@ async function importExcel(req, res, next) {
     let studentsUpdated = 0;
     let transactionsMatched = 0;
     let unmatchedRows = [];
+    let allStudentRecords = [];
+    let allAdmissionNumbers = [];
 
     // Log the import batch first
     console.log("[excel import] Creating import record...");
@@ -221,128 +223,180 @@ async function importExcel(req, res, next) {
       totalRows += parsedRows.length;
       console.log(`[excel import] Sheet "${sheetName}" parsed ${parsedRows.length} rows`);
 
-      // Process rows in batches to avoid timeout
-      for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
-        const batch = parsedRows.slice(i, i + BATCH_SIZE);
-        console.log(`[excel import] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(parsedRows.length / BATCH_SIZE)} (${batch.length} rows)`);
-        
-        const batchStartTime = Date.now();
-        
-        for (const row of batch) {
-          const admissionNumber = extractAccountNumber(row);
-          const fullName = extractStudentName(row);
-          const contact = extractContact(row);
-          const openingBalance = extractOpeningBalance(row);
-          const previousBalance = extractPreviousBalance(row);
-          const currentBalance = extractCurrentBalance(row);
-          const term3Amount = extractTerm3Amount(row);
-          const term1Amount = extractTerm1Amount(row);
-          const term2Amount = extractTerm2Amount(row);
-          const cpaAmount = extractCpaAmount(row);
-          const sign = extractSign(row);
+      // Collect all student records for bulk upsert
+      for (const row of parsedRows) {
+        const admissionNumber = extractAccountNumber(row);
+        const fullName = extractStudentName(row);
+        const contact = extractContact(row);
+        const openingBalance = extractOpeningBalance(row);
+        const previousBalance = extractPreviousBalance(row);
+        const currentBalance = extractCurrentBalance(row);
+        const term3Amount = extractTerm3Amount(row);
+        const term1Amount = extractTerm1Amount(row);
+        const term2Amount = extractTerm2Amount(row);
+        const cpaAmount = extractCpaAmount(row);
+        const sign = extractSign(row);
 
-          // Skip rows without admission number
-          if (!admissionNumber) {
-            continue;
-          }
-
-          // Upsert into students table
-          const { data: studentData, error: studentError } = await supabase
-            .from("students")
-            .upsert({
-              admission_number: admissionNumber,
-              full_name: fullName,
-              contact: contact,
-              opening_balance: openingBalance,
-              previous_balance: previousBalance,
-              current_balance: currentBalance,
-              term_3_amount: term3Amount,
-              term_1_amount: term1Amount,
-              term_2_amount: term2Amount,
-              cpa_amount: cpaAmount,
-              sign: sign,
-              track_name: sheetName,
-              sheet_name: sheetName,
-            }, {
-              onConflict: "admission_number",
-              ignoreDuplicates: false
-            })
-            .select()
-            .single();
-
-          if (studentError) {
-            console.error("[excel import] ERROR upserting student:", studentError);
-          } else {
-            const isNew = !studentData || studentData.created_at === studentData.updated_at;
-            if (isNew) {
-              studentsInserted++;
-            } else {
-              studentsUpdated++;
-            }
-          }
-
-          // Try to match with transactions
-          const { data: existingTx, error: findError } = await supabase
-            .from("transactions")
-            .select("id")
-            .eq("account_number", admissionNumber);
-
-          if (findError) {
-            console.error("[excel import] ERROR finding transactions:", findError);
-          } else if (!existingTx || existingTx.length === 0) {
-            // No matching transaction - add to unmatched rows
-            unmatchedRows.push({
-              import_id: importRow.id,
-              account_number: admissionNumber,
-              row_data: row,
-              sheet_name: sheetName,
-              track_name: sheetName
-            });
-          } else {
-            // Match found - update transaction with supplementary data
-            for (const tx of existingTx) {
-              const { error: updateError } = await supabase
-                .from("transactions")
-                .update({
-                  supplementary_data: {
-                    admission_number: admissionNumber,
-                    full_name: fullName,
-                    contact: contact,
-                    opening_balance: openingBalance,
-                    previous_balance: previousBalance,
-                    current_balance: currentBalance,
-                    term_3_amount: term3Amount,
-                    term_1_amount: term1Amount,
-                    track_name: sheetName,
-                    sheet_name: sheetName,
-                  },
-                  linked_at: new Date().toISOString()
-                })
-                .eq("id", tx.id);
-
-              if (updateError) {
-                console.error("[excel import] ERROR updating transaction:", updateError);
-              } else {
-                transactionsMatched++;
-              }
-            }
-          }
+        // Skip rows without admission number
+        if (!admissionNumber) {
+          continue;
         }
-        
-        const batchDuration = Date.now() - batchStartTime;
-        console.log(`[excel import] Batch completed in ${batchDuration}ms`);
-        
-        // Check if we're approaching timeout
-        const elapsed = Date.now() - startTime;
-        if (elapsed > MAX_EXECUTION_TIME * 0.8) {
-          console.warn(`[excel import] WARNING: Approaching timeout (${elapsed}ms / ${MAX_EXECUTION_TIME}ms)`);
-        }
+
+        allStudentRecords.push({
+          admission_number: admissionNumber,
+          full_name: fullName,
+          contact: contact,
+          opening_balance: openingBalance,
+          previous_balance: previousBalance,
+          current_balance: currentBalance,
+          term_3_amount: term3Amount,
+          term_1_amount: term1Amount,
+          term_2_amount: term2Amount,
+          cpa_amount: cpaAmount,
+          sign: sign,
+          track_name: sheetName,
+          sheet_name: sheetName,
+        });
+
+        allAdmissionNumbers.push(admissionNumber);
       }
-      console.log(`[excel import] Finished processing sheet: ${sheetName}`);
+      console.log(`[excel import] Sheet "${sheetName}" collected ${allStudentRecords.length} student records`);
     }
 
-    // Insert unmatched rows
-    console.log(`[excel import] Inserting ${unmatchedRows.length} unmatched rows...`);
+    console.log(`[excel import] Total student records to upsert: ${allStudentRecords.length}`);
+
+    // Bulk upsert students in batches
+    console.log("[excel import] Starting bulk student upserts...");
+    for (let i = 0; i < allStudentRecords.length; i += BATCH_SIZE) {
+      const batch = allStudentRecords.slice(i, i + BATCH_SIZE);
+      console.log(`[excel import] Upserting batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(allStudentRecords.length / BATCH_SIZE)} (${batch.length} records)`);
+      
+      const batchStartTime = Date.now();
+      
+      const { data: upsertedData, error: upsertError } = await supabase
+        .from("students")
+        .upsert(batch, {
+          onConflict: "admission_number",
+          ignoreDuplicates: false
+        });
+
+      if (upsertError) {
+        console.error("[excel import] ERROR in bulk upsert:", upsertError);
+      } else {
+        // Count inserted vs updated by checking if records were returned
+        if (upsertedData && upsertedData.length > 0) {
+          studentsInserted += upsertedData.length;
+        }
+      }
+      
+      const batchDuration = Date.now() - batchStartTime;
+      console.log(`[excel import] Batch upsert completed in ${batchDuration}ms`);
+    }
+
+    console.log("[excel import] Bulk student upserts completed");
+
+    // Get existing students to determine insert vs update counts
+    const { data: existingStudents, error: existingError } = await supabase
+      .from("students")
+      .select("admission_number")
+      .in("admission_number", allAdmissionNumbers);
+
+    if (existingError) {
+      console.error("[excel import] ERROR fetching existing students:", existingError);
+    } else {
+      const existingSet = new Set((existingStudents || []).map(s => s.admission_number));
+      studentsUpdated = allAdmissionNumbers.length - existingSet.size;
+      studentsInserted = existingSet.size;
+      console.log(`[excel import] Students inserted: ${studentsInserted}, updated: ${studentsUpdated}`);
+    }
+
+    // Bulk query for all matching transactions
+    console.log("[excel import] Querying matching transactions in bulk...");
+    const { data: allTransactions, error: txError } = await supabase
+      .from("transactions")
+      .select("id, account_number")
+      .in("account_number", allAdmissionNumbers);
+
+    if (txError) {
+      console.error("[excel import] ERROR querying transactions:", txError);
+    } else {
+      console.log(`[excel import] Found ${allTransactions?.length || 0} matching transactions`);
+
+      // Group transactions by account_number for efficient matching
+      const txByAccount = new Map();
+      for (const tx of allTransactions || []) {
+        if (!txByAccount.has(tx.account_number)) {
+          txByAccount.set(tx.account_number, []);
+        }
+        txByAccount.get(tx.account_number).push(tx);
+      }
+
+      // Match students with transactions and prepare updates
+      const transactionUpdates = [];
+      const matchedAdmissionNumbers = new Set();
+
+      for (const studentRecord of allStudentRecords) {
+        const admissionNumber = studentRecord.admission_number;
+        const matchingTxs = txByAccount.get(admissionNumber);
+
+        if (!matchingTxs || matchingTxs.length === 0) {
+          // No matching transaction - add to unmatched rows
+          unmatchedRows.push({
+            import_id: importRow.id,
+            account_number: admissionNumber,
+            row_data: studentRecord,
+            sheet_name: studentRecord.sheet_name,
+            track_name: studentRecord.track_name
+          });
+        } else {
+          matchedAdmissionNumbers.add(admissionNumber);
+          // Prepare transaction updates
+          for (const tx of matchingTxs) {
+            transactionUpdates.push({
+              id: tx.id,
+              supplementary_data: {
+                admission_number: admissionNumber,
+                full_name: studentRecord.full_name,
+                contact: studentRecord.contact,
+                opening_balance: studentRecord.opening_balance,
+                previous_balance: studentRecord.previous_balance,
+                current_balance: studentRecord.current_balance,
+                term_3_amount: studentRecord.term_3_amount,
+                term_1_amount: studentRecord.term_1_amount,
+                track_name: studentRecord.track_name,
+                sheet_name: studentRecord.sheet_name,
+              },
+              linked_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+
+      transactionsMatched = matchedAdmissionNumbers.size;
+      console.log(`[excel import] Matched ${transactionsMatched} students with transactions`);
+      console.log(`[excel import] Unmatched: ${unmatchedRows.length}`);
+
+      // Batch transaction updates using Promise.all for parallel execution
+      if (transactionUpdates.length > 0) {
+        console.log(`[excel import] Updating ${transactionUpdates.length} transactions in parallel...`);
+        const updatePromises = transactionUpdates.map(update => 
+          supabase
+            .from("transactions")
+            .update({
+              supplementary_data: update.supplementary_data,
+              linked_at: update.linked_at
+            })
+            .eq("id", update.id)
+        );
+
+        const results = await Promise.allSettled(updatePromises);
+        const successfulUpdates = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`[excel import] Transaction updates completed: ${successfulUpdates}/${transactionUpdates.length} successful`);
+      }
+    }
+
+    // Insert unmatched rows in bulk
+    console.log(`[excel import] Inserting ${unmatchedRows.length} unmatched rows in bulk...`);
     if (unmatchedRows.length > 0) {
       const { error: unmatchedInsertError } = await supabase
         .from("excel_unmatched_rows")
