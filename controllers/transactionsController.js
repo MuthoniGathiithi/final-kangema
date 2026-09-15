@@ -31,6 +31,8 @@ async function listTransactions(req, res, next) {
     const pageSize = Math.min(parseInt(req.query.pageSize) || 25, 200);
     const { search, source, from, to } = req.query;
 
+    console.log("[listTransactions] Query params:", { page, pageSize, search, source, from, to });
+
     let query = supabase
       .from("transactions")
       .select("*", { count: "exact" })
@@ -52,6 +54,7 @@ async function listTransactions(req, res, next) {
     }
     if (source) {
       // Case-insensitive source filtering
+      console.log("[listTransactions] Filtering by source:", source);
       query = query.ilike("source", source);
     }
     if (from) {
@@ -67,6 +70,8 @@ async function listTransactions(req, res, next) {
 
     const { data, error, count } = await query;
     if (error) throw error;
+
+    console.log("[listTransactions] Results:", { count: count, dataLength: data?.length });
 
     res.json({
       success: true,
