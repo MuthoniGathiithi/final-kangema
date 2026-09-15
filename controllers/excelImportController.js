@@ -99,6 +99,31 @@ function extractTerm1Amount(row) {
 }
 
 /**
+ * Extracts CPA amount (CPA column)
+ */
+function extractCpaAmount(row) {
+  return extractNumeric(row, "CPA");
+}
+
+/**
+ * Extracts TERM 2 amount (TERM 2 column)
+ */
+function extractTerm2Amount(row) {
+  return extractNumeric(row, "TERM 2");
+}
+
+/**
+ * Extracts SIGN column value
+ */
+function extractSign(row) {
+  const value = extractColumn(row, "SIGN");
+  if (value !== null && value !== undefined && value !== "") {
+    return String(value).trim();
+  }
+  return null;
+}
+
+/**
  * POST /api/excel/import
  * multipart/form-data with a single field "file" (.xlsx or .xls)
  */
@@ -181,6 +206,9 @@ async function importExcel(req, res, next) {
         const currentBalance = extractCurrentBalance(row);
         const term3Amount = extractTerm3Amount(row);
         const term1Amount = extractTerm1Amount(row);
+        const term2Amount = extractTerm2Amount(row);
+        const cpaAmount = extractCpaAmount(row);
+        const sign = extractSign(row);
 
         console.log(`[excel import] Processing row - ADM: ${admissionNumber}, Name: ${fullName}`);
 
@@ -202,6 +230,9 @@ async function importExcel(req, res, next) {
             current_balance: currentBalance,
             term_3_amount: term3Amount,
             term_1_amount: term1Amount,
+            term_2_amount: term2Amount,
+            cpa_amount: cpaAmount,
+            sign: sign,
             track_name: sheetName,
             sheet_name: sheetName,
           }, {
@@ -384,6 +415,9 @@ async function getStudents(req, res, next) {
       currentBalance: Number(student.current_balance) || 0,
       term3Amount: Number(student.term_3_amount) || 0,
       term1Amount: Number(student.term_1_amount) || 0,
+      term2Amount: Number(student.term_2_amount) || 0,
+      cpaAmount: Number(student.cpa_amount) || 0,
+      sign: student.sign,
       trackName: student.track_name,
       sheetName: student.sheet_name,
       matched: matchedAccountNumbers.has(student.admission_number),
@@ -401,13 +435,138 @@ async function getStudents(req, res, next) {
 }
 
 /**
+ * GET /api/excel/sheets/:sheetName/students
+ * Returns students for a specific sheet
+ */
+async function getStudentsBySheet(req, res, next) {
+  try {
+    const sheetName = decodeURIComponent(req.params.sheetName || "").trim();
+    if (!sheetName) {
+      return res.status(400).json({ success: false, message: "sheetName is required" });
+    }
+
+    const { data: students, error: studentsError } = await supabase
+      .from("students")
+      .select("*")
+      .eq("sheet_name", sheetName)
+      .order("full_name", { ascending: true });
+
+    if (studentsError) throw studentsError;
+
+    // Get all account numbers that have matching transactions
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("account_number");
+
+    if (txError) throw txError;
+
+    const matchedAccountNumbers = new Set(
+      (transactions || []).map(tx => tx.account_number).filter(Boolean)
+    );
+
+    const studentsWithStatus = (students || []).map(student => ({
+      id: student.id,
+      admissionNumber: student.admission_number,
+      fullName: student.full_name,
+      contact: student.contact,
+      openingBalance: Number(student.opening_balance) || 0,
+      previousBalance: Number(student.previous_balance) || 0,
+      currentBalance: Number(student.current_balance) || 0,
+      term3Amount: Number(student.term_3_amount) || 0,
+      term1Amount: Number(student.term_1_amount) || 0,
+      term2Amount: Number(student.term_2_amount) || 0,
+      cpaAmount: Number(student.cpa_amount) || 0,
+      sign: student.sign,
+      trackName: student.track_name,
+      sheetName: student.sheet_name,
+      matched: matchedAccountNumbers.has(student.admission_number),
+      createdAt: student.created_at,
+      updatedAt: student.updated_at,
+    }));
+
+    res.json({
+      success: true,
+      sheetName: sheetName,
+      students: studentsWithStatus,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/excel/students/:id
+ * Returns complete student detail
+ */
+async function getStudentById(req, res, next) {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "student id is required" });
+    }
+
+    const { data: student, error: studentError } = await supabase
+      .from("students")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (studentError || !student) {
+      return res.status(404).json({ success: false, message: "Student not found" });
+    }
+
+    // Get matching transactions
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("*")
+      .eq("account_number", student.admission_number);
+
+    if (txError) throw txError;
+
+    const studentDetail = {
+      id: student.id,
+      admissionNumber: student.admission_number,
+      fullName: student.full_name,
+      contact: student.contact,
+      openingBalance: Number(student.opening_balance) || 0,
+      previousBalance: Number(student.previous_balance) || 0,
+      currentBalance: Number(student.current_balance) || 0,
+      term3Amount: Number(student.term_3_amount) || 0,
+      term1Amount: Number(student.term_1_amount) || 0,
+      term2Amount: Number(student.term_2_amount) || 0,
+      cpaAmount: Number(student.cpa_amount) || 0,
+      sign: student.sign,
+      trackName: student.track_name,
+      sheetName: student.sheet_name,
+      matched: (transactions || []).length > 0,
+      transactions: (transactions || []).map(tx => ({
+        id: tx.id,
+        transactionCode: tx.transaction_code,
+        amount: Number(tx.amount) || 0,
+        transactionTime: tx.transaction_time,
+        source: tx.source,
+      })),
+      createdAt: student.created_at,
+      updatedAt: student.updated_at,
+    };
+
+    res.json({
+      success: true,
+      student: studentDetail,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/excel/sheets
- * Lists distinct sheet names from unmatched Excel rows (for delete UI).
+ * Lists distinct sheet names from students table with record counts
  */
 async function listExcelSheets(req, res, next) {
   try {
     const { data, error } = await supabase
-      .from("excel_unmatched_rows")
+      .from("students")
       .select("sheet_name")
       .not("sheet_name", "is", null);
 
@@ -658,6 +817,8 @@ module.exports = {
   importExcel,
   getExcelData,
   getStudents,
+  getStudentsBySheet,
+  getStudentById,
   listExcelSheets,
   deleteExcelSheet,
   deleteExcelImport,

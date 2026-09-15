@@ -83,6 +83,9 @@ create table if not exists students (
   current_balance numeric(12,2) default 0, -- C.P.BAL column
   term_3_amount numeric(12,2) default 0,   -- TERM 3 column
   term_1_amount numeric(12,2) default 0,   -- TERM 1 / TRM 1 column
+  term_2_amount numeric(12,2) default 0,   -- TERM 2 column
+  cpa_amount numeric(12,2) default 0,       -- CPA column
+  sign text,                               -- SIGN column
   track_name text,                         -- Sheet name (KENYATTA, LUMUMBA, etc.)
   sheet_name text,                         -- Original sheet name
   created_at timestamptz not null default now(),
@@ -91,6 +94,7 @@ create table if not exists students (
 
 create index if not exists idx_students_admission_number on students (admission_number);
 create index if not exists idx_students_track_name on students (track_name);
+create index if not exists idx_students_sheet_name on students (sheet_name);
 
 drop trigger if exists trg_students_updated_at on students;
 create trigger trg_students_updated_at
