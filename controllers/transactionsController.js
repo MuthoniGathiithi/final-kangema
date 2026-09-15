@@ -214,12 +214,23 @@ async function getTotalAmount(req, res, next) {
  */
 async function getTransactionStats(req, res, next) {
   try {
-    // Get total count by source
+    // Get all transactions with needed fields
     const { data: allTx, error: allError } = await supabase
       .from("transactions")
-      .select("source, amount, transaction_code");
+      .select("source, amount, transaction_code, account_number");
 
-    if (allError) throw allError;
+    if (allError) {
+      console.error("[getTransactionStats] Error fetching transactions:", allError);
+      throw allError;
+    }
+
+    console.log("[getTransactionStats] Total transactions fetched:", allTx?.length || 0);
+    
+    // Log sample source values for debugging
+    if (allTx && allTx.length > 0) {
+      const sampleSources = [...new Set(allTx.slice(0, 10).map(tx => tx.source))];
+      console.log("[getTransactionStats] Sample source values:", sampleSources);
+    }
 
     // Deduplicate by transaction_code and calculate totals
     const uniqueTransactions = new Map();
@@ -231,13 +242,18 @@ async function getTransactionStats(req, res, next) {
     }
 
     const uniqueArray = Array.from(uniqueTransactions.values());
+    console.log("[getTransactionStats] Unique transactions after dedup:", uniqueArray.length);
     
     const totalCount = uniqueArray.length;
-    const smsCount = uniqueArray.filter(tx => tx.source === "sms").length;
-    const darajaCount = uniqueArray.filter(tx => tx.source === "daraja").length;
-    const manualCount = uniqueArray.filter(tx => tx.source === "manual").length;
+    
+    // Case-insensitive matching for source field
+    const smsCount = uniqueArray.filter(tx => tx.source && tx.source.toLowerCase() === "sms").length;
+    const darajaCount = uniqueArray.filter(tx => tx.source && tx.source.toLowerCase() === "daraja").length;
+    const manualCount = uniqueArray.filter(tx => tx.source && tx.source.toLowerCase() === "manual").length;
     
     const totalAmount = uniqueArray.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+
+    console.log("[getTransactionStats] Stats:", { totalCount, smsCount, darajaCount, manualCount, totalAmount });
 
     res.json({
       success: true,
@@ -250,6 +266,7 @@ async function getTransactionStats(req, res, next) {
       },
     });
   } catch (err) {
+    console.error("[getTransactionStats] Error:", err);
     next(err);
   }
 }
