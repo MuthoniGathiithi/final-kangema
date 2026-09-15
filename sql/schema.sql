@@ -71,3 +71,28 @@ create table if not exists excel_unmatched_rows (
   track_name text,
   created_at timestamptz not null default now()
 );
+
+-- Students table: stores student information from Excel imports
+create table if not exists students (
+  id uuid primary key default gen_random_uuid(),
+  admission_number text unique not null,  -- ADM column from Excel
+  full_name text,                          -- NAME column from Excel
+  contact text,                            -- CONTACT column from Excel
+  opening_balance numeric(12,2) default 0, -- O.P.BAL column
+  previous_balance numeric(12,2) default 0, -- P.P.BAL column
+  current_balance numeric(12,2) default 0, -- C.P.BAL column
+  term_3_amount numeric(12,2) default 0,   -- TERM 3 column
+  term_1_amount numeric(12,2) default 0,   -- TERM 1 / TRM 1 column
+  track_name text,                         -- Sheet name (KENYATTA, LUMUMBA, etc.)
+  sheet_name text,                         -- Original sheet name
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_students_admission_number on students (admission_number);
+create index if not exists idx_students_track_name on students (track_name);
+
+drop trigger if exists trg_students_updated_at on students;
+create trigger trg_students_updated_at
+before update on students
+for each row execute function set_updated_at();

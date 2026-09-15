@@ -2,204 +2,100 @@ const XLSX = require("xlsx");
 const supabase = require("../config/supabase");
 
 /**
- * Finds the account-number-like column in a row, trying a few common header spellings.
+ * Extracts column value by header name (case-insensitive)
+ */
+function extractColumn(row, headerName) {
+  const keys = Object.keys(row);
+  for (const key of keys) {
+    if (key.trim().toLowerCase() === headerName.toLowerCase()) {
+      return row[key];
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts account number (ADM column)
  */
 function extractAccountNumber(row) {
-  const candidates = [
-    "account number",
-    "account_number",
-    "accountnumber",
-    "account no",
-    "acc no",
-    "account",
-    "reference",
-    "ref",
-    "ref no",
-    "refno",
-    "bill ref",
-    "billref",
-    "bill ref number",
-    "billrefnumber",
-    "adm",
-    "adm ",
-    "admission",
-    "admission no",
-    "admission number",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractAccountNumber] Available keys:", keys);
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractAccountNumber] Found account number in column "${key}": ${value}`);
-      return value;
-    }
+  const value = extractColumn(row, "ADM");
+  if (value !== null && value !== undefined && value !== "") {
+    return String(value).trim();
   }
-  // Try to find by column position (ADM is usually the second column)
-  const keysArray = Object.keys(row);
-  if (keysArray.length >= 2) {
-    const secondKey = keysArray[1];
-    const value = String(row[secondKey]).trim();
-    if (value && !isNaN(Number(value))) {
-      console.log(`[extractAccountNumber] Using second column "${secondKey}" as account number: ${value}`);
-      return value;
-    }
-  }
-  console.log("[extractAccountNumber] No account number column found");
   return null;
 }
 
 /**
- * Extracts track name from row data
+ * Extracts student name (NAME column)
  */
-function extractTrackName(row, sheetName) {
-  const candidates = [
-    "track",
-    "track name",
-    "track_name",
-    "trackname",
-    "name",
-    "student name",
-    "student_name",
-    "studentname",
-    "full name",
-    "full_name",
-    "fullname",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractTrackName] Available keys:", keys);
-  console.log("[extractTrackName] Sheet name (fallback):", sheetName);
-  
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractTrackName] Found track name in column "${key}": ${value}`);
-      return value;
-    }
+function extractStudentName(row) {
+  const value = extractColumn(row, "NAME");
+  if (value !== null && value !== undefined && value !== "") {
+    return String(value).trim();
   }
-  
-  // If no column found, use the sheet name as track name
-  if (sheetName) {
-    console.log(`[extractTrackName] Using sheet name as track name: ${sheetName}`);
-    return sheetName;
-  }
-  
-  console.log("[extractTrackName] No track name column found");
   return null;
 }
 
 /**
- * Extracts student name from row data
+ * Extracts contact (CONTACT column)
  */
-function extractStudentName(row, sheetName) {
-  const candidates = [
-    "name",
-    "student name",
-    "student_name",
-    "studentname",
-    "full name",
-    "full_name",
-    "fullname",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractStudentName] Available keys:", keys);
-  console.log("[extractStudentName] Sheet name:", sheetName);
-  
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      const value = String(row[key]).trim();
-      console.log(`[extractStudentName] Found student name in column "${key}": ${value}`);
-      return value;
-    }
+function extractContact(row) {
+  const value = extractColumn(row, "CONTACT");
+  if (value !== null && value !== undefined && value !== "") {
+    return String(value).trim();
   }
-  
-  // Try to find column that contains the sheet name (e.g., "GRADE 10 - KENYATTA")
-  for (const key of keys) {
-    if (key.includes(sheetName) || key.includes("GRADE")) {
-      const value = String(row[key]).trim();
-      if (value && value !== "NAME") {
-        console.log(`[extractStudentName] Found student name in sheet-named column "${key}": ${value}`);
-        return value;
-      }
-    }
-  }
-  
-  console.log("[extractStudentName] No student name column found");
   return null;
 }
 
 /**
- * Extracts amount from row data - handles currency symbols, commas, and various formats
+ * Extracts numeric value from column
  */
-function extractAmount(row) {
-  const candidates = [
-    "amount",
-    "ksh",
-    "kes",
-    "value",
-    "total",
-    "fee",
-    "payment",
-    "balance",
-    "term 3",
-    "term 1",
-    "term 2",
-    "term",
-    "0.p.bal",
-    "p.p.bal",
-    "c.p.bal",
-  ];
-  const keys = Object.keys(row);
-  console.log("[extractAmount] Available keys:", keys);
-  for (const key of keys) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (candidates.includes(normalizedKey)) {
-      let value = row[key];
-      console.log(`[extractAmount] Found amount column "${key}" with raw value:`, value);
-      
-      // Handle null/undefined
-      if (value === null || value === undefined || value === "") {
-        console.log("[extractAmount] Value is null/undefined/empty, returning 0");
-        return 0;
-      }
-      
-      // Convert to string and clean
-      value = String(value).trim();
-      
-      // Remove currency symbols and commas
-      value = value.replace(/[Kk][Ss][Hh]/g, "");
-      value = value.replace(/[Kk][Ee][Ss]/g, "");
-      value = value.replace(/[Kk][Ss]/g, "");
-      value = value.replace(/[$£€]/g, "");
-      value = value.replace(/,/g, "");
-      value = value.trim();
-      
-      const parsed = parseFloat(value);
-      const result = isNaN(parsed) ? 0 : parsed;
-      console.log(`[extractAmount] Parsed amount: ${result}`);
-      return result;
-    }
+function extractNumeric(row, headerName) {
+  const value = extractColumn(row, headerName);
+  if (value === null || value === undefined || value === "") {
+    return 0;
   }
-  
-  // Try to find by column position (TERM 3 is usually the 6th column, index 5)
-  const keysArray = Object.keys(row);
-  if (keysArray.length >= 6) {
-    const sixthKey = keysArray[5];
-    const value = row[sixthKey];
-    if (value !== null && value !== undefined && value !== "") {
-      const parsed = parseFloat(String(value).replace(/,/g, ""));
-      if (!isNaN(parsed) && parsed > 0) {
-        console.log(`[extractAmount] Using sixth column "${sixthKey}" as amount: ${parsed}`);
-        return parsed;
-      }
-    }
+  const parsed = parseFloat(String(value).replace(/,/g, ""));
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Extracts opening balance (O.P.BAL)
+ */
+function extractOpeningBalance(row) {
+  return extractNumeric(row, "O.P.BAL");
+}
+
+/**
+ * Extracts previous balance (P.P.BAL)
+ */
+function extractPreviousBalance(row) {
+  return extractNumeric(row, "P.P.BAL");
+}
+
+/**
+ * Extracts current balance (C.P.BAL)
+ */
+function extractCurrentBalance(row) {
+  return extractNumeric(row, "C.P.BAL");
+}
+
+/**
+ * Extracts term 3 amount (TERM 3)
+ */
+function extractTerm3Amount(row) {
+  return extractNumeric(row, "TERM 3");
+}
+
+/**
+ * Extracts term 1 amount (TERM 1 or TRM 1)
+ */
+function extractTerm1Amount(row) {
+  let value = extractNumeric(row, "TERM 1");
+  if (value === 0) {
+    value = extractNumeric(row, "TRM 1");
   }
-  
-  console.log("[extractAmount] No amount column found, returning 0");
-  return 0;
+  return value;
 }
 
 /**
@@ -216,39 +112,22 @@ async function importExcel(req, res, next) {
     console.log("[excel import] File received:", req.file.originalname);
     console.log("[excel import] File size:", req.file.size);
     console.log("[excel import] MIME type:", req.file.mimetype);
-    console.log("[excel import] Buffer length:", req.file.buffer.length);
 
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     console.log("[excel import] Workbook loaded successfully");
-    const sheetName = workbook.SheetNames[0];
-    console.log("[excel import] Sheet name:", sheetName);
-    console.log("[excel import] All sheet names:", workbook.SheetNames);
-    
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-    console.log("[excel import] Total rows parsed:", rows.length);
-    
-    if (rows.length > 0) {
-      console.log("[excel import] Sample row keys:", Object.keys(rows[0]));
-      console.log("[excel import] Sample row data:", JSON.stringify(rows[0], null, 2));
-      
-      // Log first 3 rows for debugging
-      console.log("[excel import] First 3 rows:");
-      for (let i = 0; i < Math.min(3, rows.length); i++) {
-        console.log(`[excel import] Row ${i}:`, JSON.stringify(rows[i], null, 2));
-      }
-    } else {
-      console.log("[excel import] WARNING: No rows parsed from Excel file");
-    }
+    const sheetNames = workbook.SheetNames;
+    console.log("[excel import] All sheet names:", sheetNames);
 
-    let matched = 0;
-    let unmatched = 0;
-    const unmatchedRows = [];
+    let totalRows = 0;
+    let studentsInserted = 0;
+    let studentsUpdated = 0;
+    let transactionsMatched = 0;
+    let unmatchedRows = [];
 
     // Log the import batch first
     const { data: importRow, error: importError } = await supabase
       .from("excel_imports")
-      .insert({ file_name: req.file.originalname, rows_total: rows.length })
+      .insert({ file_name: req.file.originalname, rows_total: 0 })
       .select()
       .single();
 
@@ -256,92 +135,176 @@ async function importExcel(req, res, next) {
       console.error("[excel import] Failed to create import record:", importError);
       throw importError;
     }
-    
+
     console.log("[excel import] Import record created with ID:", importRow.id);
 
-    for (const row of rows) {
-      const accountNumber = extractAccountNumber(row);
-      const trackName = extractTrackName(row, sheetName);
-      const studentName = extractStudentName(row, sheetName);
-      const amount = extractAmount(row);
+    // Process each sheet
+    for (const sheetName of sheetNames) {
+      console.log(`[excel import] Processing sheet: ${sheetName}`);
+      const sheet = workbook.Sheets[sheetName];
+      
+      // Parse with header: 1 (skip first row, use second row as header)
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, header: 1 });
+      console.log(`[excel import] Sheet "${sheetName}" raw rows: ${rows.length}`);
 
-      // Add student name + sheet to row data (sheetName lets deletes target a sheet later)
-      const enrichedRow = { ...row, studentName, sheetName, trackName };
-
-      if (!accountNumber) {
-        unmatched++;
-        unmatchedRows.push({ 
-          import_id: importRow.id, 
-          account_number: null, 
-          row_data: enrichedRow,
-          sheet_name: sheetName,
-          track_name: trackName
-        });
-        console.log(`[excel import] Row unmatched: no account number. Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
+      if (rows.length < 2) {
+        console.log(`[excel import] Sheet "${sheetName}" has no data rows, skipping`);
         continue;
       }
 
-      // Find transaction(s) with this account number
-      const { data: existing, error: findError } = await supabase
-        .from("transactions")
-        .select("id")
-        .eq("account_number", accountNumber);
+      // Row 0 is the title row (skip)
+      // Row 1 is the header row
+      const headers = rows[1];
+      console.log(`[excel import] Sheet "${sheetName}" headers:`, headers);
 
-      if (findError) {
-        console.error("[excel import] Error finding transactions:", findError);
-        throw findError;
-      }
+      // Data rows start from row 2
+      const dataRows = rows.slice(2);
+      console.log(`[excel import] Sheet "${sheetName}" data rows: ${dataRows.length}`);
 
-      if (!existing || existing.length === 0) {
-        unmatched++;
-        unmatchedRows.push({ 
-          import_id: importRow.id, 
-          account_number: accountNumber, 
-          row_data: enrichedRow,
-          sheet_name: sheetName,
-          track_name: trackName
+      // Convert data rows to objects using headers
+      const parsedRows = dataRows.map(row => {
+        const obj = {};
+        headers.forEach((header, index) => {
+          obj[header] = row[index];
         });
-        console.log(`[excel import] Row unmatched: no matching transaction. Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}`);
-        continue;
-      }
+        return obj;
+      });
 
-      // Merge supplementary data into every matching transaction
-      for (const tx of existing) {
-        const { error: updateError } = await supabase
+      totalRows += parsedRows.length;
+
+      for (const row of parsedRows) {
+        const admissionNumber = extractAccountNumber(row);
+        const fullName = extractStudentName(row);
+        const contact = extractContact(row);
+        const openingBalance = extractOpeningBalance(row);
+        const previousBalance = extractPreviousBalance(row);
+        const currentBalance = extractCurrentBalance(row);
+        const term3Amount = extractTerm3Amount(row);
+        const term1Amount = extractTerm1Amount(row);
+
+        console.log(`[excel import] Processing row - ADM: ${admissionNumber}, Name: ${fullName}`);
+
+        // Skip rows without admission number
+        if (!admissionNumber) {
+          console.log(`[excel import] Skipping row - no admission number`);
+          continue;
+        }
+
+        // Upsert into students table
+        const { data: studentData, error: studentError } = await supabase
+          .from("students")
+          .upsert({
+            admission_number: admissionNumber,
+            full_name: fullName,
+            contact: contact,
+            opening_balance: openingBalance,
+            previous_balance: previousBalance,
+            current_balance: currentBalance,
+            term_3_amount: term3Amount,
+            term_1_amount: term1Amount,
+            track_name: sheetName,
+            sheet_name: sheetName,
+          }, {
+            onConflict: "admission_number",
+            ignoreDuplicates: false
+          })
+          .select()
+          .single();
+
+        if (studentError) {
+          console.error("[excel import] Error upserting student:", studentError);
+        } else {
+          if (studentData.created_at === studentData.updated_at) {
+            studentsInserted++;
+          } else {
+            studentsUpdated++;
+          }
+        }
+
+        // Try to match with transactions
+        const { data: existingTx, error: findError } = await supabase
           .from("transactions")
-          .update({ supplementary_data: enrichedRow, linked_at: new Date().toISOString() })
-          .eq("id", tx.id);
+          .select("id")
+          .eq("account_number", admissionNumber);
 
-        if (updateError) {
-          console.error("[excel import] Error updating transaction:", updateError);
-          throw updateError;
+        if (findError) {
+          console.error("[excel import] Error finding transactions:", findError);
+        } else if (!existingTx || existingTx.length === 0) {
+          // No matching transaction - add to unmatched rows
+          unmatchedRows.push({
+            import_id: importRow.id,
+            account_number: admissionNumber,
+            row_data: row,
+            sheet_name: sheetName,
+            track_name: sheetName
+          });
+          console.log(`[excel import] No matching transaction for ADM: ${admissionNumber}`);
+        } else {
+          // Match found - update transaction with supplementary data
+          for (const tx of existingTx) {
+            const { error: updateError } = await supabase
+              .from("transactions")
+              .update({
+                supplementary_data: {
+                  admission_number: admissionNumber,
+                  full_name: fullName,
+                  contact: contact,
+                  opening_balance: openingBalance,
+                  previous_balance: previousBalance,
+                  current_balance: currentBalance,
+                  term_3_amount: term3Amount,
+                  term_1_amount: term1Amount,
+                  track_name: sheetName,
+                  sheet_name: sheetName,
+                },
+                linked_at: new Date().toISOString()
+              })
+              .eq("id", tx.id);
+
+            if (updateError) {
+              console.error("[excel import] Error updating transaction:", updateError);
+            } else {
+              transactionsMatched++;
+            }
+          }
+          console.log(`[excel import] Matched ${existingTx.length} transaction(s) for ADM: ${admissionNumber}`);
         }
       }
-      matched++;
-      console.log(`[excel import] Row matched: Account: ${accountNumber}, Track: ${trackName}, Student: ${studentName}, Amount: ${amount}, Matched ${existing.length} transaction(s)`);
     }
 
+    // Insert unmatched rows
     if (unmatchedRows.length > 0) {
       const { error: unmatchedInsertError } = await supabase
         .from("excel_unmatched_rows")
         .insert(unmatchedRows);
-      if (unmatchedInsertError) console.error("[excel import] failed to log unmatched rows:", unmatchedInsertError);
+      if (unmatchedInsertError) console.error("[excel import] Failed to log unmatched rows:", unmatchedInsertError);
     }
 
+    // Update import record with totals
     await supabase
       .from("excel_imports")
-      .update({ rows_matched: matched, rows_unmatched: unmatched })
+      .update({
+        rows_total: totalRows,
+        rows_matched: transactionsMatched,
+        rows_unmatched: unmatchedRows.length
+      })
       .eq("id", importRow.id);
 
-    console.log("[excel import] Import complete. Total:", rows.length, ", Matched:", matched, ", Unmatched:", unmatched);
+    console.log("[excel import] Import complete. Total rows:", totalRows);
+    console.log("[excel import] Students inserted:", studentsInserted);
+    console.log("[excel import] Students updated:", studentsUpdated);
+    console.log("[excel import] Transactions matched:", transactionsMatched);
+    console.log("[excel import] Unmatched rows:", unmatchedRows.length);
     console.log("========== EXCEL IMPORT END ==========");
 
     res.json({
       success: true,
       importId: importRow.id,
-      rowsTotal: rows.length,
-      rowsMatched: matched,
-      rowsUnmatched: unmatched,
+      rowsTotal: totalRows,
+      studentsInserted,
+      studentsUpdated,
+      transactionsMatched,
+      rowsUnmatched: unmatchedRows.length,
     });
   } catch (err) {
     console.error("[excel import] Error:", err);
