@@ -128,8 +128,12 @@ function extractSign(row) {
  * multipart/form-data with a single field "file" (.xlsx or .xls)
  */
 async function importExcel(req, res, next) {
+  const startTime = Date.now();
+  let responseSent = false;
+
   try {
     if (!req.file) {
+      console.log("[excel import] ERROR: No file uploaded");
       return res.status(400).json({ success: false, message: "No file uploaded (field name must be 'file')" });
     }
 
@@ -150,6 +154,7 @@ async function importExcel(req, res, next) {
     let unmatchedRows = [];
 
     // Log the import batch first
+    console.log("[excel import] Creating import record...");
     const { data: importRow, error: importError } = await supabase
       .from("excel_imports")
       .insert({ file_name: req.file.originalname, rows_total: 0 })
@@ -157,7 +162,7 @@ async function importExcel(req, res, next) {
       .single();
 
     if (importError) {
-      console.error("[excel import] Failed to create import record:", importError);
+      console.error("[excel import] ERROR: Failed to create import record:", importError);
       throw importError;
     }
 
@@ -196,6 +201,7 @@ async function importExcel(req, res, next) {
       });
 
       totalRows += parsedRows.length;
+      console.log(`[excel import] Sheet "${sheetName}" parsed ${parsedRows.length} rows`);
 
       for (const row of parsedRows) {
         const admissionNumber = extractAccountNumber(row);
@@ -219,6 +225,7 @@ async function importExcel(req, res, next) {
         }
 
         // Upsert into students table
+        console.log(`[excel import] Upserting student ADM: ${admissionNumber}`);
         const { data: studentData, error: studentError } = await supabase
           .from("students")
           .upsert({
@@ -243,23 +250,29 @@ async function importExcel(req, res, next) {
           .single();
 
         if (studentError) {
-          console.error("[excel import] Error upserting student:", studentError);
+          console.error("[excel import] ERROR upserting student:", studentError);
         } else {
-          if (studentData.created_at === studentData.updated_at) {
+          // Check if this was an insert or update by checking if the record existed
+          // More reliable than timestamp comparison
+          const isNew = !studentData || studentData.created_at === studentData.updated_at;
+          if (isNew) {
             studentsInserted++;
+            console.log(`[excel import] Student inserted: ${admissionNumber}`);
           } else {
             studentsUpdated++;
+            console.log(`[excel import] Student updated: ${admissionNumber}`);
           }
         }
 
         // Try to match with transactions
+        console.log(`[excel import] Finding transactions for ADM: ${admissionNumber}`);
         const { data: existingTx, error: findError } = await supabase
           .from("transactions")
           .select("id")
           .eq("account_number", admissionNumber);
 
         if (findError) {
-          console.error("[excel import] Error finding transactions:", findError);
+          console.error("[excel import] ERROR finding transactions:", findError);
         } else if (!existingTx || existingTx.length === 0) {
           // No matching transaction - add to unmatched rows
           unmatchedRows.push({
@@ -272,6 +285,7 @@ async function importExcel(req, res, next) {
           console.log(`[excel import] No matching transaction for ADM: ${admissionNumber}`);
         } else {
           // Match found - update transaction with supplementary data
+          console.log(`[excel import] Found ${existingTx.length} transaction(s) for ADM: ${admissionNumber}`);
           for (const tx of existingTx) {
             const { error: updateError } = await supabase
               .from("transactions")
@@ -293,26 +307,33 @@ async function importExcel(req, res, next) {
               .eq("id", tx.id);
 
             if (updateError) {
-              console.error("[excel import] Error updating transaction:", updateError);
+              console.error("[excel import] ERROR updating transaction:", updateError);
             } else {
               transactionsMatched++;
+              console.log(`[excel import] Transaction updated: ${tx.id}`);
             }
           }
-          console.log(`[excel import] Matched ${existingTx.length} transaction(s) for ADM: ${admissionNumber}`);
         }
       }
+      console.log(`[excel import] Finished processing sheet: ${sheetName}`);
     }
 
     // Insert unmatched rows
+    console.log(`[excel import] Inserting ${unmatchedRows.length} unmatched rows...`);
     if (unmatchedRows.length > 0) {
       const { error: unmatchedInsertError } = await supabase
         .from("excel_unmatched_rows")
         .insert(unmatchedRows);
-      if (unmatchedInsertError) console.error("[excel import] Failed to log unmatched rows:", unmatchedInsertError);
+      if (unmatchedInsertError) {
+        console.error("[excel import] ERROR: Failed to log unmatched rows:", unmatchedInsertError);
+      } else {
+        console.log("[excel import] Unmatched rows inserted successfully");
+      }
     }
 
     // Update import record with totals
-    await supabase
+    console.log("[excel import] Updating import record with totals...");
+    const { error: updateError } = await supabase
       .from("excel_imports")
       .update({
         rows_total: totalRows,
@@ -321,25 +342,55 @@ async function importExcel(req, res, next) {
       })
       .eq("id", importRow.id);
 
-    console.log("[excel import] Import complete. Total rows:", totalRows);
+    if (updateError) {
+      console.error("[excel import] ERROR: Failed to update import record:", updateError);
+    } else {
+      console.log("[excel import] Import record updated successfully");
+    }
+
+    const duration = Date.now() - startTime;
+    console.log("[excel import] Import complete. Duration:", duration, "ms");
+    console.log("[excel import] Total rows:", totalRows);
     console.log("[excel import] Students inserted:", studentsInserted);
     console.log("[excel import] Students updated:", studentsUpdated);
     console.log("[excel import] Transactions matched:", transactionsMatched);
     console.log("[excel import] Unmatched rows:", unmatchedRows.length);
     console.log("========== EXCEL IMPORT END ==========");
 
-    res.json({
-      success: true,
-      importId: importRow.id,
-      rowsTotal: totalRows,
-      studentsInserted,
-      studentsUpdated,
-      transactionsMatched,
-      rowsUnmatched: unmatchedRows.length,
-    });
+    if (!responseSent) {
+      responseSent = true;
+      console.log("[excel import] Sending response to client...");
+      const response = {
+        success: true,
+        importId: importRow.id,
+        rowsTotal: totalRows,
+        studentsInserted,
+        studentsUpdated,
+        transactionsMatched,
+        rowsUnmatched: unmatchedRows.length,
+      };
+      res.status(200).json(response);
+      console.log("[excel import] Response sent successfully");
+    }
   } catch (err) {
-    console.error("[excel import] Error:", err);
+    console.error("[excel import] CATCH ERROR:", err);
+    console.error("[excel import] Error message:", err.message);
     console.error("[excel import] Error stack:", err.stack);
+    console.error("[excel import] Duration:", Date.now() - startTime, "ms");
+    
+    if (!responseSent) {
+      responseSent = true;
+      console.log("[excel import] Sending error response to client...");
+      res.status(500).json({ 
+        success: false, 
+        message: "Import failed", 
+        error: err.message 
+      });
+      console.log("[excel import] Error response sent");
+    } else {
+      console.error("[excel import] ERROR: Response already sent, cannot send error response");
+    }
+    
     next(err);
   }
 }
