@@ -51,7 +51,8 @@ async function listTransactions(req, res, next) {
       query = query.or(clauses.join(","));
     }
     if (source) {
-      query = query.eq("source", source);
+      // Case-insensitive source filtering
+      query = query.ilike("source", source);
     }
     if (from) {
       query = query.gte("transaction_time", from);
@@ -299,7 +300,8 @@ async function exportTransactions(req, res, next) {
       query = query.or(clauses.join(","));
     }
     if (source) {
-      query = query.eq("source", source);
+      // Case-insensitive source filtering
+      query = query.ilike("source", source);
     }
     if (from) {
       query = query.gte("transaction_time", from);
