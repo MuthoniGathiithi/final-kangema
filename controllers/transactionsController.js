@@ -146,7 +146,7 @@ async function createManualTransaction(req, res, next) {
 
     const { data, error } = await supabase
       .from("transactions")
-      .insert({
+      .upsert({
         transaction_code: code || null,
         account_number: accountNumber,
         amount,
@@ -159,13 +159,16 @@ async function createManualTransaction(req, res, next) {
         source: isSms ? "sms" : "manual",
         raw_payload: rawPayload || null,
         raw_message: isSms ? rawMessage || null : null,
+      }, {
+        onConflict: "transaction_code",
+        ignoreDuplicates: false
       })
       .select()
       .single();
 
     if (error) throw error;
 
-    res.status(201).json({ success: true, transaction: formatTransaction(data) });
+    res.status(200).json({ success: true, transaction: formatTransaction(data) });
   } catch (err) {
     next(err);
   }
