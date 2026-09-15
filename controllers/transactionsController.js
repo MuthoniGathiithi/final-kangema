@@ -181,17 +181,17 @@ async function createManualTransaction(req, res, next) {
  */
 async function getTotalAmount(req, res, next) {
   try {
-    // Get all transactions
+    // Get all transactions with needed fields for proper deduplication
     const { data: allTx, error: allError } = await supabase
       .from("transactions")
-      .select("amount, transaction_code");
+      .select("amount, transaction_code, account_number, source");
 
     if (allError) throw allError;
 
-    // Deduplicate by transaction_code
+    // Deduplicate by transaction_code or composite key (same logic as getTransactionStats)
     const uniqueTransactions = new Map();
     for (const tx of allTx || []) {
-      const key = tx.transaction_code || `tx-${tx.amount}`;
+      const key = tx.transaction_code || `${tx.source}-${tx.amount}-${tx.account_number}`;
       if (!uniqueTransactions.has(key)) {
         uniqueTransactions.set(key, tx);
       }
@@ -200,11 +200,14 @@ async function getTotalAmount(req, res, next) {
     const uniqueArray = Array.from(uniqueTransactions.values());
     const totalAmount = uniqueArray.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
 
+    console.log("[getTotalAmount] Total transactions:", allTx?.length || 0, "Unique after dedup:", uniqueArray.length, "Total amount:", totalAmount);
+
     res.json({
       success: true,
       total_amount: totalAmount,
     });
   } catch (err) {
+    console.error("[getTotalAmount] Error:", err);
     next(err);
   }
 }
