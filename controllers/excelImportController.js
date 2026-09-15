@@ -315,7 +315,7 @@ async function importExcel(req, res, next) {
 
 /**
  * GET /api/excel/data
- * Returns all imported Excel records
+ * Returns all imported Excel records (unmatched rows)
  */
 async function getExcelData(req, res, next) {
   try {
@@ -328,15 +328,11 @@ async function getExcelData(req, res, next) {
 
     const formattedData = rows.map((row) => {
       const rowData = row.row_data || {};
-      const amount = extractAmount(rowData);
       
       return {
         id: row.id,
         accountNumber: row.account_number || "",
         name: rowData.name || rowData.Name || "",
-        amount: amount,
-        notes: rowData.notes || rowData.Notes || null,
-        category: rowData.category || rowData.Category || null,
         sheetName: row.sheet_name || null,
         trackName: row.track_name || null,
         importId: row.import_id,
@@ -347,6 +343,57 @@ async function getExcelData(req, res, next) {
     res.json({
       success: true,
       data: formattedData,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/students
+ * Returns all students with full records and matched status
+ */
+async function getStudents(req, res, next) {
+  try {
+    const { data: students, error: studentsError } = await supabase
+      .from("students")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (studentsError) throw studentsError;
+
+    // Get all account numbers that have matching transactions
+    const { data: transactions, error: txError } = await supabase
+      .from("transactions")
+      .select("account_number");
+
+    if (txError) throw txError;
+
+    const matchedAccountNumbers = new Set(
+      (transactions || []).map(tx => tx.account_number).filter(Boolean)
+    );
+
+    // Add matched status to each student
+    const studentsWithStatus = (students || []).map(student => ({
+      id: student.id,
+      admissionNumber: student.admission_number,
+      fullName: student.full_name,
+      contact: student.contact,
+      openingBalance: Number(student.opening_balance) || 0,
+      previousBalance: Number(student.previous_balance) || 0,
+      currentBalance: Number(student.current_balance) || 0,
+      term3Amount: Number(student.term_3_amount) || 0,
+      term1Amount: Number(student.term_1_amount) || 0,
+      trackName: student.track_name,
+      sheetName: student.sheet_name,
+      matched: matchedAccountNumbers.has(student.admission_number),
+      createdAt: student.created_at,
+      updatedAt: student.updated_at,
+    }));
+
+    res.json({
+      success: true,
+      students: studentsWithStatus,
     });
   } catch (err) {
     next(err);
@@ -385,8 +432,8 @@ async function listExcelSheets(req, res, next) {
 
 /**
  * DELETE /api/excel/sheets/:sheetName
- * Deletes all unmatched rows for that sheet, and clears matching
- * supplementary_data on transactions linked from that sheet.
+ * Deletes all students and unmatched rows for that sheet.
+ * Does NOT delete matched transactions.
  */
 async function deleteExcelSheet(req, res, next) {
   try {
@@ -395,6 +442,41 @@ async function deleteExcelSheet(req, res, next) {
       return res.status(400).json({ success: false, message: "sheetName is required" });
     }
 
+    // Check for matched students before deleting
+    const { data: matchedStudents, error: matchError } = await supabase
+      .from("students")
+      .select("admission_number, full_name")
+      .eq("sheet_name", sheetName);
+
+    if (matchError) throw matchError;
+
+    const matchedAdmissionNumbers = [];
+    if (matchedStudents && matchedStudents.length > 0) {
+      const admissionNumbers = matchedStudents.map(s => s.admission_number);
+      const { data: transactions, error: txError } = await supabase
+        .from("transactions")
+        .select("account_number")
+        .in("account_number", admissionNumbers);
+
+      if (txError) throw txError;
+
+      const txAccountNumbers = new Set((transactions || []).map(tx => tx.account_number));
+      matchedAdmissionNumbers.push(...matchedStudents
+        .filter(s => txAccountNumbers.has(s.admission_number))
+        .map(s => ({ admissionNumber: s.admission_number, fullName: s.full_name }))
+      );
+    }
+
+    // If there are matched students, return warning
+    if (matchedAdmissionNumbers.length > 0) {
+      return res.json({
+        success: false,
+        message: "Cannot delete sheet: some students have matched transactions",
+        matchedStudents: matchedAdmissionNumbers,
+      });
+    }
+
+    // Delete unmatched rows for this sheet
     const { data: deletedRows, error: deleteRowsError } = await supabase
       .from("excel_unmatched_rows")
       .delete()
@@ -406,6 +488,19 @@ async function deleteExcelSheet(req, res, next) {
       throw deleteRowsError;
     }
 
+    // Delete students for this sheet
+    const { data: deletedStudents, error: deleteStudentsError } = await supabase
+      .from("students")
+      .delete()
+      .eq("sheet_name", sheetName)
+      .select("id");
+
+    if (deleteStudentsError) {
+      console.error("[deleteExcelSheet] Error deleting students:", deleteStudentsError);
+      throw deleteStudentsError;
+    }
+
+    // Clear supplementary_data from transactions linked to this sheet
     let clearedTransactions = 0;
     const { data: txs, error: txErr } = await supabase
       .from("transactions")
@@ -419,7 +514,8 @@ async function deleteExcelSheet(req, res, next) {
       const matches =
         data.sheetName === sheetName ||
         data.trackName === sheetName ||
-        data.track_name === sheetName;
+        data.track_name === sheetName ||
+        data.sheet_name === sheetName;
 
       if (!matches) continue;
 
@@ -433,12 +529,13 @@ async function deleteExcelSheet(req, res, next) {
     }
 
     console.log(
-      `[deleteExcelSheet] Deleted sheet "${sheetName}": unmatched=${(deletedRows || []).length}, clearedTx=${clearedTransactions}`
+      `[deleteExcelSheet] Deleted sheet "${sheetName}": students=${(deletedStudents || []).length}, unmatched=${(deletedRows || []).length}, clearedTx=${clearedTransactions}`
     );
 
     res.json({
       success: true,
       message: `Deleted Excel sheet "${sheetName}"`,
+      deletedStudents: (deletedStudents || []).length,
       deletedUnmatchedRows: (deletedRows || []).length,
       clearedTransactions,
     });
@@ -560,6 +657,7 @@ async function debugExcel(req, res, next) {
 module.exports = {
   importExcel,
   getExcelData,
+  getStudents,
   listExcelSheets,
   deleteExcelSheet,
   deleteExcelImport,
