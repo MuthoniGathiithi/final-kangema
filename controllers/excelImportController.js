@@ -130,9 +130,26 @@ function extractSign(row) {
 async function importExcel(req, res, next) {
   const startTime = Date.now();
   let responseSent = false;
+  const MAX_EXECUTION_TIME = 55000; // 55 seconds (Vercel timeout is ~60s)
+  const BATCH_SIZE = 50; // Process rows in batches to avoid timeout
+
+  // Set up timeout handler
+  const timeoutId = setTimeout(() => {
+    if (!responseSent) {
+      console.error("[excel import] TIMEOUT: Execution exceeded maximum time");
+      console.error("[excel import] Duration:", Date.now() - startTime, "ms");
+      responseSent = true;
+      res.status(408).json({ 
+        success: false, 
+        message: "Import timeout: file too large or processing took too long",
+        duration: Date.now() - startTime
+      });
+    }
+  }, MAX_EXECUTION_TIME);
 
   try {
     if (!req.file) {
+      clearTimeout(timeoutId);
       console.log("[excel import] ERROR: No file uploaded");
       return res.status(400).json({ success: false, message: "No file uploaded (field name must be 'file')" });
     }
@@ -162,6 +179,7 @@ async function importExcel(req, res, next) {
       .single();
 
     if (importError) {
+      clearTimeout(timeoutId);
       console.error("[excel import] ERROR: Failed to create import record:", importError);
       throw importError;
     }
@@ -203,116 +221,121 @@ async function importExcel(req, res, next) {
       totalRows += parsedRows.length;
       console.log(`[excel import] Sheet "${sheetName}" parsed ${parsedRows.length} rows`);
 
-      for (const row of parsedRows) {
-        const admissionNumber = extractAccountNumber(row);
-        const fullName = extractStudentName(row);
-        const contact = extractContact(row);
-        const openingBalance = extractOpeningBalance(row);
-        const previousBalance = extractPreviousBalance(row);
-        const currentBalance = extractCurrentBalance(row);
-        const term3Amount = extractTerm3Amount(row);
-        const term1Amount = extractTerm1Amount(row);
-        const term2Amount = extractTerm2Amount(row);
-        const cpaAmount = extractCpaAmount(row);
-        const sign = extractSign(row);
+      // Process rows in batches to avoid timeout
+      for (let i = 0; i < parsedRows.length; i += BATCH_SIZE) {
+        const batch = parsedRows.slice(i, i + BATCH_SIZE);
+        console.log(`[excel import] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(parsedRows.length / BATCH_SIZE)} (${batch.length} rows)`);
+        
+        const batchStartTime = Date.now();
+        
+        for (const row of batch) {
+          const admissionNumber = extractAccountNumber(row);
+          const fullName = extractStudentName(row);
+          const contact = extractContact(row);
+          const openingBalance = extractOpeningBalance(row);
+          const previousBalance = extractPreviousBalance(row);
+          const currentBalance = extractCurrentBalance(row);
+          const term3Amount = extractTerm3Amount(row);
+          const term1Amount = extractTerm1Amount(row);
+          const term2Amount = extractTerm2Amount(row);
+          const cpaAmount = extractCpaAmount(row);
+          const sign = extractSign(row);
 
-        console.log(`[excel import] Processing row - ADM: ${admissionNumber}, Name: ${fullName}`);
-
-        // Skip rows without admission number
-        if (!admissionNumber) {
-          console.log(`[excel import] Skipping row - no admission number`);
-          continue;
-        }
-
-        // Upsert into students table
-        console.log(`[excel import] Upserting student ADM: ${admissionNumber}`);
-        const { data: studentData, error: studentError } = await supabase
-          .from("students")
-          .upsert({
-            admission_number: admissionNumber,
-            full_name: fullName,
-            contact: contact,
-            opening_balance: openingBalance,
-            previous_balance: previousBalance,
-            current_balance: currentBalance,
-            term_3_amount: term3Amount,
-            term_1_amount: term1Amount,
-            term_2_amount: term2Amount,
-            cpa_amount: cpaAmount,
-            sign: sign,
-            track_name: sheetName,
-            sheet_name: sheetName,
-          }, {
-            onConflict: "admission_number",
-            ignoreDuplicates: false
-          })
-          .select()
-          .single();
-
-        if (studentError) {
-          console.error("[excel import] ERROR upserting student:", studentError);
-        } else {
-          // Check if this was an insert or update by checking if the record existed
-          // More reliable than timestamp comparison
-          const isNew = !studentData || studentData.created_at === studentData.updated_at;
-          if (isNew) {
-            studentsInserted++;
-            console.log(`[excel import] Student inserted: ${admissionNumber}`);
-          } else {
-            studentsUpdated++;
-            console.log(`[excel import] Student updated: ${admissionNumber}`);
+          // Skip rows without admission number
+          if (!admissionNumber) {
+            continue;
           }
-        }
 
-        // Try to match with transactions
-        console.log(`[excel import] Finding transactions for ADM: ${admissionNumber}`);
-        const { data: existingTx, error: findError } = await supabase
-          .from("transactions")
-          .select("id")
-          .eq("account_number", admissionNumber);
+          // Upsert into students table
+          const { data: studentData, error: studentError } = await supabase
+            .from("students")
+            .upsert({
+              admission_number: admissionNumber,
+              full_name: fullName,
+              contact: contact,
+              opening_balance: openingBalance,
+              previous_balance: previousBalance,
+              current_balance: currentBalance,
+              term_3_amount: term3Amount,
+              term_1_amount: term1Amount,
+              term_2_amount: term2Amount,
+              cpa_amount: cpaAmount,
+              sign: sign,
+              track_name: sheetName,
+              sheet_name: sheetName,
+            }, {
+              onConflict: "admission_number",
+              ignoreDuplicates: false
+            })
+            .select()
+            .single();
 
-        if (findError) {
-          console.error("[excel import] ERROR finding transactions:", findError);
-        } else if (!existingTx || existingTx.length === 0) {
-          // No matching transaction - add to unmatched rows
-          unmatchedRows.push({
-            import_id: importRow.id,
-            account_number: admissionNumber,
-            row_data: row,
-            sheet_name: sheetName,
-            track_name: sheetName
-          });
-          console.log(`[excel import] No matching transaction for ADM: ${admissionNumber}`);
-        } else {
-          // Match found - update transaction with supplementary data
-          console.log(`[excel import] Found ${existingTx.length} transaction(s) for ADM: ${admissionNumber}`);
-          for (const tx of existingTx) {
-            const { error: updateError } = await supabase
-              .from("transactions")
-              .update({
-                supplementary_data: {
-                  admission_number: admissionNumber,
-                  full_name: fullName,
-                  contact: contact,
-                  opening_balance: openingBalance,
-                  previous_balance: previousBalance,
-                  current_balance: currentBalance,
-                  term_3_amount: term3Amount,
-                  term_1_amount: term1Amount,
-                  track_name: sheetName,
-                  sheet_name: sheetName,
-                },
-                linked_at: new Date().toISOString()
-              })
-              .eq("id", tx.id);
-
-            if (updateError) {
-              console.error("[excel import] ERROR updating transaction:", updateError);
+          if (studentError) {
+            console.error("[excel import] ERROR upserting student:", studentError);
+          } else {
+            const isNew = !studentData || studentData.created_at === studentData.updated_at;
+            if (isNew) {
+              studentsInserted++;
             } else {
-              transactionsMatched++;
-              console.log(`[excel import] Transaction updated: ${tx.id}`);
+              studentsUpdated++;
             }
           }
+
+          // Try to match with transactions
+          const { data: existingTx, error: findError } = await supabase
+            .from("transactions")
+            .select("id")
+            .eq("account_number", admissionNumber);
+
+          if (findError) {
+            console.error("[excel import] ERROR finding transactions:", findError);
+          } else if (!existingTx || existingTx.length === 0) {
+            // No matching transaction - add to unmatched rows
+            unmatchedRows.push({
+              import_id: importRow.id,
+              account_number: admissionNumber,
+              row_data: row,
+              sheet_name: sheetName,
+              track_name: sheetName
+            });
+          } else {
+            // Match found - update transaction with supplementary data
+            for (const tx of existingTx) {
+              const { error: updateError } = await supabase
+                .from("transactions")
+                .update({
+                  supplementary_data: {
+                    admission_number: admissionNumber,
+                    full_name: fullName,
+                    contact: contact,
+                    opening_balance: openingBalance,
+                    previous_balance: previousBalance,
+                    current_balance: currentBalance,
+                    term_3_amount: term3Amount,
+                    term_1_amount: term1Amount,
+                    track_name: sheetName,
+                    sheet_name: sheetName,
+                  },
+                  linked_at: new Date().toISOString()
+                })
+                .eq("id", tx.id);
+
+              if (updateError) {
+                console.error("[excel import] ERROR updating transaction:", updateError);
+              } else {
+                transactionsMatched++;
+              }
+            }
+          }
+        }
+        
+        const batchDuration = Date.now() - batchStartTime;
+        console.log(`[excel import] Batch completed in ${batchDuration}ms`);
+        
+        // Check if we're approaching timeout
+        const elapsed = Date.now() - startTime;
+        if (elapsed > MAX_EXECUTION_TIME * 0.8) {
+          console.warn(`[excel import] WARNING: Approaching timeout (${elapsed}ms / ${MAX_EXECUTION_TIME}ms)`);
         }
       }
       console.log(`[excel import] Finished processing sheet: ${sheetName}`);
@@ -348,6 +371,7 @@ async function importExcel(req, res, next) {
       console.log("[excel import] Import record updated successfully");
     }
 
+    clearTimeout(timeoutId);
     const duration = Date.now() - startTime;
     console.log("[excel import] Import complete. Duration:", duration, "ms");
     console.log("[excel import] Total rows:", totalRows);
@@ -359,7 +383,9 @@ async function importExcel(req, res, next) {
 
     if (!responseSent) {
       responseSent = true;
-      console.log("[excel import] Sending response to client...");
+      console.log("[excel import] Preparing final response...");
+      console.log("[excel import] Import completed successfully");
+      console.log("[excel import] Sending response 200 to client...");
       const response = {
         success: true,
         importId: importRow.id,
@@ -368,11 +394,13 @@ async function importExcel(req, res, next) {
         studentsUpdated,
         transactionsMatched,
         rowsUnmatched: unmatchedRows.length,
+        duration: duration,
       };
       res.status(200).json(response);
       console.log("[excel import] Response sent successfully");
     }
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error("[excel import] CATCH ERROR:", err);
     console.error("[excel import] Error message:", err.message);
     console.error("[excel import] Error stack:", err.stack);
@@ -384,7 +412,8 @@ async function importExcel(req, res, next) {
       res.status(500).json({ 
         success: false, 
         message: "Import failed", 
-        error: err.message 
+        error: err.message,
+        duration: Date.now() - startTime
       });
       console.log("[excel import] Error response sent");
     } else {
